@@ -1,0 +1,3 @@
+v1.0.0
+It works.. needs working on stealth and cleanup
+=========================================================
