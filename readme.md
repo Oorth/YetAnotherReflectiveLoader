@@ -25,10 +25,11 @@ and calls its dllmain in a new thread (if it has one..)
 ## How YARL works
 ### Loader ->
 ```markdown
->1) YARL downloads a .dll from a remote server, using custom networking functions, straight into a vector.
->2) The data of this vector it passed to the injector (injection.cpp)
->3) The injector maps the Headers and sections in the target
->4) Injects the resources(for the shellcoee) and the shellcode in the target too
+> 1) YARL downloads a .dll from a remote server, using custom networking functions,
+>      straight into a vector, so nothing ever touches the disk
+> 2) The data of this vector it passed to the injector (injection.cpp)
+> 3) The injector maps the Headers and sections in the target
+> 4) Injects the resources(for the shellcoee) and the shellcode in the target too
 ```
 ### Shellcode ->
 The Shellcode is a very intresting piece of code.. It is position independent, and has to work with 0 resources
@@ -58,8 +59,10 @@ shellcode then
 
 ## Usage
 Implimenting it in your code requires you to have its header, networking libraries, and some more dlls which are not provided here..
->In order to stop any noobie from using and exposing its static and dynamic signatures
-But.. 
+>This is done in order to stop any noobie from using and exposing its static and dynamic signatures
+
+But..
+
 for those who are not noobies, you can find all the required resources on my GitHub scattered around :)
 >Will require a lil bit figuring things out tho..
 
