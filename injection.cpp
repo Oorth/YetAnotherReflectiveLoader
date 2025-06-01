@@ -1514,6 +1514,14 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
             }
         }
 
+        int newProtectionFlags = PAGE_READWRITE;
+        DWORD oldProtectionFlags = 0;
+        SIZE_T SizeOfShellcodeResources = pResources->Injected_Shellcode_base - pResources->ResourceBase;
+        if(my_VirtualProtect((LPVOID)pResources->ResourceBase, SizeOfShellcodeResources, newProtectionFlags, &oldProtectionFlags))
+        {
+            LOG_W(L"Shellcode Resources permission changed: Old=0x%X, New=0x%X", oldProtectionFlags, newProtectionFlags);
+        } else LOG_W(L"!!!! FAILED to VirtualProtect Shellcode Resources to 0x%X", newProtectionFlags);
+
         LOG_W(L"            Memory Hardening \n-----------------------------------------------------------");
 
         #pragma endregion
