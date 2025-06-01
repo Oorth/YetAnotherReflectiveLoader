@@ -504,6 +504,7 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
     typedef VOID(NTAPI* PIMAGE_TLS_CALLBACK)(PVOID DllHandle, DWORD Reason, PVOID Reserved);
     typedef HMODULE(WINAPI* pfnLoadLibraryA)(LPCSTR lpLibFileName);
     typedef HANDLE(WINAPI* pfnCreateThread)(LPSECURITY_ATTRIBUTES lpThreadAttributes, SIZE_T dwStackSize, LPTHREAD_START_ROUTINE lpStartAddress, __drv_aliasesMem LPVOID lpParameter, DWORD dwCreationFlags, LPDWORD lpThreadId);
+    typedef BOOL(WINAPI* pfnVirtualProtect)(LPVOID lpAddress, SIZE_T dwSize, DWORD  flNewProtect, PDWORD lpflOldProtect);
     typedef BOOL(WINAPI* pfnDLLMain)(HINSTANCE, DWORD, LPVOID);
     typedef BOOL(WINAPI* pfnCloseHandle)(HANDLE hObject);
 
@@ -526,13 +527,15 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
 
     __declspec(allocate(".stub")) static const CHAR cMessageBoxWFunction[] = "MessageBoxW";
     __declspec(allocate(".stub")) static const CHAR cOutputDebugStringWFunction[] = "OutputDebugStringW";
-    __declspec(allocate(".stub")) static const CHAR cLoadLibraryAFunction[] = "LoadLibraryA";
+    __declspec(allocate(".stub")) static const CHAR cLoadLibraryAFunction[] = "LoadLibraryA"; 
+    __declspec(allocate(".stub")) static const CHAR cVirtualProtectFunction[] = "VirtualProtect";
     __declspec(allocate(".stub")) static const CHAR cCreateThreadFunction[] = "CreateThread";
     __declspec(allocate(".stub")) static const CHAR cCloseHandleFunction[] = "CloseHandle";
 
     __declspec(allocate(".stub")) pfnMessageBoxW my_MessageBoxW = nullptr;
     __declspec(allocate(".stub")) pfnOutputDebugStringW my_OutputDebugStringW = nullptr;
     __declspec(allocate(".stub")) pfnLoadLibraryA my_LoadLibraryA = nullptr;
+    __declspec(allocate(".stub")) pfnVirtualProtect my_VirtualProtect = nullptr;
     __declspec(allocate(".stub")) pfnCreateThread my_CreateThread = nullptr;
     __declspec(allocate(".stub")) pfnCloseHandle my_CloseHandle = nullptr;
 
@@ -1100,6 +1103,9 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
         my_LoadLibraryA = (pfnLoadLibraryA)ShellcodeFindExportAddress(sLibs.hKERNELBASE, cLoadLibraryAFunction, my_LoadLibraryA);
         if(my_LoadLibraryA == NULL) __debugbreak();
 
+        my_VirtualProtect = (pfnVirtualProtect)ShellcodeFindExportAddress(sLibs.hKERNELBASE, cVirtualProtectFunction, my_LoadLibraryA);
+        if(my_VirtualProtect == NULL) __debugbreak();
+
         my_CreateThread = (pfnCreateThread)ShellcodeFindExportAddress(sLibs.hKERNELBASE, cCreateThreadFunction, my_LoadLibraryA);
         if(my_CreateThread == NULL) __debugbreak();
 
@@ -1438,7 +1444,82 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
 
         //==========================================================================================
         
+        #pragma region Memory Hardening 
 
+        LOG_W(L"            Memory Hardening ");
+        
+        IMAGE_SECTION_HEADER* pSectionHeader_injected_dll = IMAGE_FIRST_SECTION(pNtHeader_injected_dll);
+        WORD noOfSections_injectedShellcode = pFileHeader_injected_dll->NumberOfSections;
+
+        for(UINT i = 0; i < noOfSections_injectedShellcode; ++i)
+        {
+            IMAGE_SECTION_HEADER* pCurrentSection = &pSectionHeader_injected_dll[i];
+
+            DWORD SectionRVA = pCurrentSection->VirtualAddress;
+            BYTE* pSectionMemoryBase = pResources->Injected_dll_base + SectionRVA;
+            SIZE_T SectionVirtualSize = pCurrentSection->Misc.VirtualSize;
+
+            char currentSectionNameAnsi[IMAGE_SIZEOF_SHORT_NAME + 1] = {0};
+            for (int k = 0; k < IMAGE_SIZEOF_SHORT_NAME && pCurrentSection->Name[k] != '\0'; ++k) currentSectionNameAnsi[k] = (char)pCurrentSection->Name[k];
+
+            if(SectionVirtualSize == 0) LOG_W(L"Size of section [%hs] is 0, skipping", currentSectionNameAnsi);
+            else
+            {
+                // LOG_W(L"Changing protection for '%hs'", currentSectionNameAnsi);
+                DWORD characteristics = pCurrentSection->Characteristics;
+
+                int newProtectionFlags = 0;
+
+                IMAGE_DATA_DIRECTORY relocDirEntry = pOptionalHeader_injected_dll->DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC];
+                if(relocDirEntry.VirtualAddress != 0 && pCurrentSection->VirtualAddress == relocDirEntry.VirtualAddress)
+                {
+                    newProtectionFlags = PAGE_NOACCESS;
+                    // LOG_W(L"Section '%hs' (relocation data) setting to PAGE_NOACCESS.", currentSectionNameAnsi);
+                }
+                else
+                {
+                    if (characteristics & IMAGE_SCN_MEM_EXECUTE)
+                    {
+                        if (characteristics & IMAGE_SCN_MEM_WRITE) newProtectionFlags = PAGE_EXECUTE_READWRITE;      
+                        else if (characteristics & IMAGE_SCN_MEM_READ) newProtectionFlags = PAGE_EXECUTE_READ;  // .text
+                        else newProtectionFlags = PAGE_EXECUTE;
+                    }
+                    else if (characteristics & IMAGE_SCN_MEM_WRITE)     //Note: Data sections are often also readable, Windows loader typically maps .data/.bss as RW.
+                    {
+                        newProtectionFlags = PAGE_READWRITE;            // .data, .bss
+                    }
+                    else if(characteristics & IMAGE_SCN_MEM_READ) newProtectionFlags = PAGE_READONLY;  // .rdata
+                    else
+                    {
+                        newProtectionFlags = PAGE_NOACCESS; // Section with no R, W, or E flags
+                        LOG_W(L"Section '%hs' has no R/W/E characteristics. Setting to PAGE_NOACCESS.", currentSectionNameAnsi);
+                    }
+                }
+
+                // If for some reason newProtectionFlags is still 0 (e.g., section with only IMAGE_SCN_MEM_WRITE but not READ or EXECUTE, which is odd)
+                // a default might be applied, but the logic above should cover most cases.
+                // PAGE_NOACCESS is a safe default if unsure.
+                if (newProtectionFlags == 0)
+                {
+                    LOG_W(L"Section '%hs' resulted in no specific protection flags, defaulting to PAGE_READONLY.", currentSectionNameAnsi);
+                    newProtectionFlags = PAGE_READONLY; // A somewhat safe default
+                }
+
+                DWORD oldProtectionFlags = 0;
+                if(my_VirtualProtect((LPVOID)pSectionMemoryBase, SectionVirtualSize, newProtectionFlags, &oldProtectionFlags))
+                {
+                    LOG_W(L"Section '%hs' (0x%p, size 0x%X) permissions changed: Old=0x%X, New=0x%X", currentSectionNameAnsi, (void*)pSectionMemoryBase, SectionVirtualSize, oldProtectionFlags, newProtectionFlags);
+                }
+                else LOG_W(L"!!!! FAILED to VirtualProtect section '%hs' (0x%p) to 0x%X !!!!", currentSectionNameAnsi, (void*)pSectionMemoryBase, newProtectionFlags);
+            }
+        }
+
+        LOG_W(L"            Memory Hardening \n-----------------------------------------------------------");
+
+        #pragma endregion
+
+        //==========================================================================================
+        
         LOG_W(L"[END_OF_SHELLCODE]");
         // __debugbreak();
     }
