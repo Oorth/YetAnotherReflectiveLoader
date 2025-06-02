@@ -1035,6 +1035,15 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
             HMODULE hUsr32;
         }sLibs;
 
+        typedef struct _CACHED_PROTECTIONS_OF_REGIONS
+        {
+            DWORD CachedSectionRVA;
+            DWORD Cachedcharacteristics;
+            BYTE* pCachedSectionMemoryBase;
+            SIZE_T CachedSectionVirtualSize;
+            char CachedcurrentSectionNameAnsi[IMAGE_SIZEOF_SHORT_NAME + 1];
+        } CACHED_PROTECTIONS_OF_REGIONS, *PCACHED_PROTECTIONS_OF_REGIONS;
+
         typedef struct _MY_PEB_LDR_DATA
         {
             ULONG Length;
@@ -1444,37 +1453,60 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
 
         //==========================================================================================
         
-        #pragma region Memory Hardening 
+        #pragma region ZeroPEHeader
 
-        LOG_W(L"            Memory Hardening ");
-        
+        //----------------Fill _CACHED_PROTECTIONS_FOR_REGIONS before zeroing header
         IMAGE_SECTION_HEADER* pSectionHeader_injected_dll = IMAGE_FIRST_SECTION(pNtHeader_injected_dll);
         WORD noOfSections_injectedShellcode = pFileHeader_injected_dll->NumberOfSections;
+            
+        if (noOfSections_injectedShellcode > 20)
+        {
+            LOG_W(L"  [Cache] Warning: Number of sections (%u) exceeds cache array size (20). Truncating.", noOfSections_injectedShellcode);
+            noOfSections_injectedShellcode = 20;
+        }
+
+        __declspec(allocate(".stub")) static CACHED_PROTECTIONS_OF_REGIONS CashedProtectionArray[20];
 
         for(UINT i = 0; i < noOfSections_injectedShellcode; ++i)
         {
             IMAGE_SECTION_HEADER* pCurrentSection = &pSectionHeader_injected_dll[i];
 
-            DWORD SectionRVA = pCurrentSection->VirtualAddress;
-            BYTE* pSectionMemoryBase = pResources->Injected_dll_base + SectionRVA;
-            SIZE_T SectionVirtualSize = pCurrentSection->Misc.VirtualSize;
+            CashedProtectionArray[i].CachedSectionRVA = pCurrentSection->VirtualAddress;
+            CashedProtectionArray[i].pCachedSectionMemoryBase = pResources->Injected_dll_base + CashedProtectionArray[i].CachedSectionRVA;
+            CashedProtectionArray[i].CachedSectionVirtualSize = pCurrentSection->Misc.VirtualSize;
 
-            char currentSectionNameAnsi[IMAGE_SIZEOF_SHORT_NAME + 1] = {0};
-            for (int k = 0; k < IMAGE_SIZEOF_SHORT_NAME && pCurrentSection->Name[k] != '\0'; ++k) currentSectionNameAnsi[k] = (char)pCurrentSection->Name[k];
+            for (int k = 0; k < IMAGE_SIZEOF_SHORT_NAME && pCurrentSection->Name[k] != '\0'; ++k) CashedProtectionArray[i].CachedcurrentSectionNameAnsi[k] = (char)pCurrentSection->Name[k];
+            if(CashedProtectionArray[i].CachedSectionVirtualSize != 0) CashedProtectionArray[i].Cachedcharacteristics = pCurrentSection->Characteristics;
+        }
+        IMAGE_DATA_DIRECTORY relocDirEntry = pOptionalHeader_injected_dll->DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC];
+        //----------------Filled _CACHED_PROTECTIONS_FOR_REGIONS
 
-            if(SectionVirtualSize == 0) LOG_W(L"Size of section [%hs] is 0, skipping", currentSectionNameAnsi);
+        
+
+        #pragma endregion
+
+        //==========================================================================================
+        
+        #pragma region Memory Hardening 
+
+        LOG_W(L"            Memory Hardening ");
+        
+        for(UINT i = 0; i < noOfSections_injectedShellcode; ++i)
+        {
+            BYTE* pSectionMemoryBase = CashedProtectionArray[i].pCachedSectionMemoryBase;
+            SIZE_T SectionVirtualSize = CashedProtectionArray[i].CachedSectionVirtualSize;
+
+            if(SectionVirtualSize == 0) LOG_W(L"Size of section [%hs] is 0, skipping", CashedProtectionArray[i].CachedcurrentSectionNameAnsi);
             else
             {
-                // LOG_W(L"Changing protection for '%hs'", currentSectionNameAnsi);
-                DWORD characteristics = pCurrentSection->Characteristics;
-
+                // LOG_W(L"Changing protection for '%hs'", CashedProtectionArray[i].CachedcurrentSectionNameAnsi);
+                DWORD characteristics = CashedProtectionArray[i].Cachedcharacteristics;
                 int newProtectionFlags = 0;
 
-                IMAGE_DATA_DIRECTORY relocDirEntry = pOptionalHeader_injected_dll->DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC];
-                if(relocDirEntry.VirtualAddress != 0 && pCurrentSection->VirtualAddress == relocDirEntry.VirtualAddress)
+                if(relocDirEntry.VirtualAddress != 0 && CashedProtectionArray[i].CachedSectionRVA == relocDirEntry.VirtualAddress)
                 {
                     newProtectionFlags = PAGE_NOACCESS;
-                    // LOG_W(L"Section '%hs' (relocation data) setting to PAGE_NOACCESS.", currentSectionNameAnsi);
+                    // LOG_W(L"Section '%hs' (relocation data) setting to PAGE_NOACCESS.", CashedProtectionArray[i].CachedcurrentSectionNameAnsi);
                 }
                 else
                 {
@@ -1492,7 +1524,7 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
                     else
                     {
                         newProtectionFlags = PAGE_NOACCESS; // Section with no R, W, or E flags
-                        LOG_W(L"Section '%hs' has no R/W/E characteristics. Setting to PAGE_NOACCESS.", currentSectionNameAnsi);
+                        LOG_W(L"Section '%hs' has no R/W/E characteristics. Setting to PAGE_NOACCESS.", CashedProtectionArray[i].CachedcurrentSectionNameAnsi);
                     }
                 }
 
@@ -1501,16 +1533,16 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
                 // PAGE_NOACCESS is a safe default if unsure.
                 if (newProtectionFlags == 0)
                 {
-                    LOG_W(L"Section '%hs' resulted in no specific protection flags, defaulting to PAGE_READONLY.", currentSectionNameAnsi);
+                    LOG_W(L"Section '%hs' resulted in no specific protection flags, defaulting to PAGE_READONLY.", CashedProtectionArray[i].CachedcurrentSectionNameAnsi);
                     newProtectionFlags = PAGE_READONLY; // A somewhat safe default
                 }
 
                 DWORD oldProtectionFlags = 0;
                 if(my_VirtualProtect((LPVOID)pSectionMemoryBase, SectionVirtualSize, newProtectionFlags, &oldProtectionFlags))
                 {
-                    LOG_W(L"Section '%hs' (0x%p, size 0x%X) permissions changed: Old=0x%X, New=0x%X", currentSectionNameAnsi, (void*)pSectionMemoryBase, SectionVirtualSize, oldProtectionFlags, newProtectionFlags);
+                    LOG_W(L"Section '%hs' (0x%p, size 0x%X) permissions changed: Old=0x%X, New=0x%X", CashedProtectionArray[i].CachedcurrentSectionNameAnsi, (void*)pSectionMemoryBase, SectionVirtualSize, oldProtectionFlags, newProtectionFlags);
                 }
-                else LOG_W(L"!!!! FAILED to VirtualProtect section '%hs' (0x%p) to 0x%X !!!!", currentSectionNameAnsi, (void*)pSectionMemoryBase, newProtectionFlags);
+                else LOG_W(L"!!!! FAILED to VirtualProtect section '%hs' (0x%p) to 0x%X !!!!", CashedProtectionArray[i].CachedcurrentSectionNameAnsi, (void*)pSectionMemoryBase, newProtectionFlags);
             }
         }
 

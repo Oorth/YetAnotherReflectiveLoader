@@ -1,3 +1,5 @@
 v1.0.0
 It works.. needs working on stealth and cleanup
 =========================================================
+v.1.1.2
+Added structure to hold the cached protection data
