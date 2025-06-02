@@ -507,6 +507,7 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
     typedef BOOL(WINAPI* pfnVirtualProtect)(LPVOID lpAddress, SIZE_T dwSize, DWORD  flNewProtect, PDWORD lpflOldProtect);
     typedef BOOL(WINAPI* pfnDLLMain)(HINSTANCE, DWORD, LPVOID);
     typedef BOOL(WINAPI* pfnCloseHandle)(HANDLE hObject);
+    typedef void(NTAPI* pfnRtlFillMemory)(void* Destination, size_t Length, int Fill);
 
     ///////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -531,6 +532,7 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
     __declspec(allocate(".stub")) static const CHAR cVirtualProtectFunction[] = "VirtualProtect";
     __declspec(allocate(".stub")) static const CHAR cCreateThreadFunction[] = "CreateThread";
     __declspec(allocate(".stub")) static const CHAR cCloseHandleFunction[] = "CloseHandle";
+    __declspec(allocate(".stub")) static const CHAR cRtlFillMemoryFunction[] = "RtlFillMemory";
 
     __declspec(allocate(".stub")) pfnMessageBoxW my_MessageBoxW = nullptr;
     __declspec(allocate(".stub")) pfnOutputDebugStringW my_OutputDebugStringW = nullptr;
@@ -538,6 +540,7 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
     __declspec(allocate(".stub")) pfnVirtualProtect my_VirtualProtect = nullptr;
     __declspec(allocate(".stub")) pfnCreateThread my_CreateThread = nullptr;
     __declspec(allocate(".stub")) pfnCloseHandle my_CloseHandle = nullptr;
+    __declspec(allocate(".stub")) pfnRtlFillMemory my_RtlFillMemory = nullptr;
 
     __declspec(allocate(".stub")) static const WCHAR g_hexChars[] = L"0123456789ABCDEF";
     __declspec(allocate(".stub")) static WCHAR g_shellcodeLogBuffer[256];
@@ -1120,7 +1123,10 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
 
         my_CloseHandle = (pfnCloseHandle)ShellcodeFindExportAddress(sLibs.hKERNELBASE, cCloseHandleFunction, my_LoadLibraryA);
         if(my_CloseHandle == NULL) __debugbreak();
-            
+        
+        my_RtlFillMemory = (pfnRtlFillMemory)ShellcodeFindExportAddress(sLibs.hHookedNtdll, cRtlFillMemoryFunction, my_LoadLibraryA);
+        if(my_RtlFillMemory == NULL) __debugbreak();
+        
         ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
         // __declspec(allocate(".stub")) static const WCHAR INJECTED[] = L"INJECTED"; __declspec(allocate(".stub")) static const WCHAR s2[] = L"Hello from injected shellcode!";
@@ -1455,19 +1461,21 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
         
         #pragma region ZeroPEHeader
 
+        LOG_W(L"            ZeroPEHeader ");
+
         //----------------Fill _CACHED_PROTECTIONS_FOR_REGIONS before zeroing header
         IMAGE_SECTION_HEADER* pSectionHeader_injected_dll = IMAGE_FIRST_SECTION(pNtHeader_injected_dll);
-        WORD noOfSections_injectedShellcode = pFileHeader_injected_dll->NumberOfSections;
+        WORD noOfSections_Dll = pFileHeader_injected_dll->NumberOfSections;
             
-        if (noOfSections_injectedShellcode > 20)
+        if (noOfSections_Dll > 20)
         {
-            LOG_W(L"  [Cache] Warning: Number of sections (%u) exceeds cache array size (20). Truncating.", noOfSections_injectedShellcode);
-            noOfSections_injectedShellcode = 20;
+            LOG_W(L"  [Cache] Warning: Number of sections (%u) exceeds cache array size (20). Truncating.", noOfSections_Dll);
+            noOfSections_Dll = 20;
         }
 
         __declspec(allocate(".stub")) static CACHED_PROTECTIONS_OF_REGIONS CashedProtectionArray[20];
 
-        for(UINT i = 0; i < noOfSections_injectedShellcode; ++i)
+        for(WORD i = 0; i < noOfSections_Dll; ++i)
         {
             IMAGE_SECTION_HEADER* pCurrentSection = &pSectionHeader_injected_dll[i];
 
@@ -1481,8 +1489,12 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
         IMAGE_DATA_DIRECTORY relocDirEntry = pOptionalHeader_injected_dll->DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC];
         //----------------Filled _CACHED_PROTECTIONS_FOR_REGIONS
 
+        WORD SizeOfHeader_injected_dll = pOptionalHeader_injected_dll->SizeOfHeaders;
+        my_RtlFillMemory(pResources->Injected_dll_base, SizeOfHeader_injected_dll, 0);
+        LOG_W(L"Zeroed PE headers from [0x%p] for size [0x%X]", (void*)pResources->Injected_dll_base, SizeOfHeader_injected_dll);
         
-
+        LOG_W(L"            ZeroPEHeader \n-----------------------------------------------------------");
+        
         #pragma endregion
 
         //==========================================================================================
@@ -1491,7 +1503,7 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
 
         LOG_W(L"            Memory Hardening ");
         
-        for(UINT i = 0; i < noOfSections_injectedShellcode; ++i)
+        for(UINT i = 0; i < noOfSections_Dll; ++i)
         {
             BYTE* pSectionMemoryBase = CashedProtectionArray[i].pCachedSectionMemoryBase;
             SIZE_T SectionVirtualSize = CashedProtectionArray[i].CachedSectionVirtualSize;

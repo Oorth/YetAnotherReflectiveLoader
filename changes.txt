@@ -3,3 +3,6 @@ It works.. needs working on stealth and cleanup
 =========================================================
 v.1.1.2
 Added structure to hold the cached protection data
+=========================================================
+v.1.2.0
+Zeroed the PEHeader

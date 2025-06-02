@@ -42,7 +42,7 @@ if defined notepadPID (
     @REM echo Notepad PID: !notepadPID!
 
     @REM echo Starting x64dbg for PID !notepadPID!...
-    start /min "" "C:\tools\x32 & x64 dbg\release\x64\x64dbg.exe" -p !notepadPID!
+    @REM start /min "" "C:\tools\x32 & x64 dbg\release\x64\x64dbg.exe" -p !notepadPID!
 
     @REM echo Checking for DbgView64.exe...
     tasklist /FI "IMAGENAME eq dbgview64.exe" 2>NUL | find /I "dbgview64.exe" > NUL
