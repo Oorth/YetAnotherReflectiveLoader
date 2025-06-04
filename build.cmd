@@ -7,12 +7,18 @@
 setlocal enabledelayedexpansion
 
 cls
-del main.pdb main.map main.ilk injection.obj main.obj injection.asm main.lib main.exp main.exe vc140.pdb 2>nul
+del main.pdb main.map main.ilk injection.obj main.obj injection.asm main.lib main.exp main.exe vc140.pdb suicide.obj 2>nul
 cls
 
-@REM Compile your C++ code
-cl /EHsc /GS- /Oy /Zi .\main.cpp .\injection.cpp /link /OUT:main.exe /DEBUG /MAP /INCREMENTAL:NO
+@REM Compile asm code
+ml64.exe /c /Fo suicide.obj .\suicide.asm
+if errorlevel 1 (
+    @REM echo Compilation failed.
+    goto :eof
+)
 
+@REM Compile C++ code
+cl /EHsc /GS- /Oy /Zi .\main.cpp .\injection.cpp .\suicide.obj /link /OUT:main.exe /DEBUG /MAP /INCREMENTAL:NO
 if errorlevel 1 (
     @REM echo Compilation failed.
     goto :eof

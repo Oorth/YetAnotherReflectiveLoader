@@ -35,7 +35,9 @@ struct _RESOURCES
 
 ///////////////////////////////////////////////////////////////////////////////
 static void* FindExportAddress(HMODULE, const char*);
+
 extern "C" __declspec(noinline) void __stdcall shellcode(LPVOID);
+extern "C" int AddTwoNumbers(int a, int b);
 ///////////////////////////////////////////////////////////////////////////////
 
 NTSTATUS SanityCheck()
@@ -1568,6 +1570,22 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
 
         LOG_W(L"            Memory Hardening \n-----------------------------------------------------------");
 
+        #pragma endregion
+
+        //==========================================================================================
+        
+        #pragma region Suicide
+        LOG_W(L"            Suicide");
+        
+        int x = 5;
+        int y = 6;
+        
+        LOG_W(L"Adding %d and %d", x, y);
+        int result = AddTwoNumbers(x, y);
+        LOG_W(L"Result -> %d", result);
+
+        
+        LOG_W(L"            Suicide\n-----------------------------------------------------------");
         #pragma endregion
 
         //==========================================================================================

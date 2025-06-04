@@ -6,3 +6,6 @@ Added structure to hold the cached protection data
 =========================================================
 v.1.2.0
 Zeroed the PEHeader
+=========================================================
+v2.0.0
+Now shellcode is able to run assembly in target process
