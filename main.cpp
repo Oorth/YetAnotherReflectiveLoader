@@ -17,8 +17,6 @@ NTSTATUS ManualMap(HANDLE hproc, std::vector <unsigned char> *downloaded_dll);
 SendDataFunc send_data;
 RecvDataFunc receive_data;
 RecvDataRawFunc receive_data_raw;
-
-const char szProc[] = "notepad.exe";
 ///////////////////////////////////////////////////////////////////////////////////////
 
 void* FindExportAddress(HMODULE hModule, const char* funcName)

@@ -38,6 +38,7 @@ static void* FindExportAddress(HMODULE, const char*);
 
 extern "C" __declspec(noinline) void __stdcall shellcode(LPVOID);
 extern "C" int AddTwoNumbers(int a, int b);
+extern "C" void Suicide();
 ///////////////////////////////////////////////////////////////////////////////
 
 NTSTATUS SanityCheck()
@@ -510,6 +511,8 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
     typedef BOOL(WINAPI* pfnDLLMain)(HINSTANCE, DWORD, LPVOID);
     typedef BOOL(WINAPI* pfnCloseHandle)(HANDLE hObject);
     typedef void(NTAPI* pfnRtlFillMemory)(void* Destination, size_t Length, int Fill);
+    typedef NTSTATUS(NTAPI* pfnNtFreeVirtualMemory)(HANDLE hProcessHandel, void* vpBaseAddress, PSIZE_T RegionSize, ULONG FreeType);
+    typedef void(NTAPI* pfnRtlExitUserThread)(NTSTATUS ExitStatus);
 
     ///////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -535,6 +538,8 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
     __declspec(allocate(".stub")) static const CHAR cCreateThreadFunction[] = "CreateThread";
     __declspec(allocate(".stub")) static const CHAR cCloseHandleFunction[] = "CloseHandle";
     __declspec(allocate(".stub")) static const CHAR cRtlFillMemoryFunction[] = "RtlFillMemory";
+    __declspec(allocate(".stub")) static const CHAR cNtFreeVirtualMemoryFunction[] = "NtFreeVirtualMemory";
+    __declspec(allocate(".stub")) static const CHAR cRtlExitUserThreadFunction[] = "RtlExitUserThread";
 
     __declspec(allocate(".stub")) pfnMessageBoxW my_MessageBoxW = nullptr;
     __declspec(allocate(".stub")) pfnOutputDebugStringW my_OutputDebugStringW = nullptr;
@@ -543,6 +548,8 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
     __declspec(allocate(".stub")) pfnCreateThread my_CreateThread = nullptr;
     __declspec(allocate(".stub")) pfnCloseHandle my_CloseHandle = nullptr;
     __declspec(allocate(".stub")) pfnRtlFillMemory my_RtlFillMemory = nullptr;
+    __declspec(allocate(".stub")) pfnNtFreeVirtualMemory my_NtFreeVirtualMemory = nullptr;
+    __declspec(allocate(".stub")) pfnRtlExitUserThread my_RtlExitUserThread = nullptr;
 
     __declspec(allocate(".stub")) static const WCHAR g_hexChars[] = L"0123456789ABCDEF";
     __declspec(allocate(".stub")) static WCHAR g_shellcodeLogBuffer[256];
@@ -1128,6 +1135,12 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
         
         my_RtlFillMemory = (pfnRtlFillMemory)ShellcodeFindExportAddress(sLibs.hHookedNtdll, cRtlFillMemoryFunction, my_LoadLibraryA);
         if(my_RtlFillMemory == NULL) __debugbreak();
+
+        my_NtFreeVirtualMemory = (pfnNtFreeVirtualMemory)ShellcodeFindExportAddress(sLibs.hHookedNtdll, cNtFreeVirtualMemoryFunction, my_LoadLibraryA);
+        if(my_NtFreeVirtualMemory == NULL) __debugbreak();
+
+        my_RtlExitUserThread = (pfnRtlExitUserThread)ShellcodeFindExportAddress(sLibs.hHookedNtdll, cRtlExitUserThreadFunction, my_LoadLibraryA);
+        if(my_RtlExitUserThread == NULL) __debugbreak();
         
         ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -1577,14 +1590,16 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
         #pragma region Suicide
         LOG_W(L"            Suicide");
         
-        int x = 5;
-        int y = 6;
+        // int x = 5;
+        // int y = 6;
         
-        LOG_W(L"Adding %d and %d", x, y);
-        int result = AddTwoNumbers(x, y);
-        LOG_W(L"Result -> %d", result);
+        // LOG_W(L"Adding %d and %d", x, y);
+        // int result = AddTwoNumbers(x, y);
+        // LOG_W(L"Result -> %d", result);
 
-        
+        // Suicide();
+        // Suicide();
+
         LOG_W(L"            Suicide\n-----------------------------------------------------------");
         #pragma endregion
 

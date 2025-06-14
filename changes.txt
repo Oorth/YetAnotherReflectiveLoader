@@ -9,3 +9,6 @@ Zeroed the PEHeader
 =========================================================
 v2.0.0
 Now shellcode is able to run assembly in target process
+=========================================================
+v2.0.1
+Resolved RtlExitUserThread and NtFreeVirtualMemory
