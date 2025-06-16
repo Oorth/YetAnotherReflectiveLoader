@@ -15,3 +15,6 @@ Resolved RtlExitUserThread and NtFreeVirtualMemory
 =========================================================
 v2.0.2
 Added Suicide stub
+=========================================================
+v2.0.3
+Suicide stub needs fix

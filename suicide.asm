@@ -45,13 +45,29 @@ _STUB SEGMENT
         mov r14, r8                         ; r14 = pfnRtlExitUserThread
         
 
-        mov byte ptr [rbp - 40h], 48h       ; Micro-stub byte 0
-        mov byte ptr [rbp - 3Fh], 31h       ; Micro-stub byte 1
-        mov byte ptr [rbp - 3Eh], 0C9h      ; Micro-stub byte 2
-        mov byte ptr [rbp - 3Dh], 41h       ; Micro-stub byte 3
-        mov byte ptr [rbp - 3Ch], 0FFh      ; Micro-stub byte 4
-        mov byte ptr [rbp - 3Bh], 0E6h      ; Micro-stub byte 5
+        mov byte ptr [rbp - 40h], 48h       ; Micro-stub byte 0     ---
+        mov byte ptr [rbp - 3Fh], 31h       ; Micro-stub byte 1        |- xor rcx, rcx
+        mov byte ptr [rbp - 3Eh], 0C9h      ; Micro-stub byte 2     ---    
+        mov byte ptr [rbp - 3Dh], 41h       ; Micro-stub byte 3     ---
+        mov byte ptr [rbp - 3Ch], 0FFh      ; Micro-stub byte 4        |- jmp r14
+        mov byte ptr [rbp - 3Bh], 0E6h      ; Micro-stub byte 5     ---
         lea r11, [rbp - 40h]                ; R11 = Address of micro-stub on stack
+
+
+        mov qword ptr [rbp - 50h], r12      ; Store BaseAddressToFree value
+        mov qword ptr [rbp - 58h], 0        ; Store RegionSize value (0)
+        
+        push r11                            ; RSP is now RBP - 80 (from pushes) - 48 (from sub) - 8 (this push) ; = RBP - 0x58
+
+        ; --- Set up Arguments for NtFreeVirtualMemory(hProcess, &BaseAddress, &RegionSize, FreeType) ---
+
+        xor rcx, rcx
+        dec rcx                             ; rcx = -1 (hProcess = NtCurrentProcess)
+        lea rdx, [rbp - 50h]                ; RDX = address of [rbp - 10h] (where BaseAddressToFree value is)
+        lea r8, [rbp - 58h]                 ; R8  = address of [rbp - 18h] (where RegionSize=0 value is)
+        mov r9d, 08000h                     ; R9d = FreeType = MEM_RELEASE (0x8000)
+        int 3
+        jmp r13
 
         int 3
 
