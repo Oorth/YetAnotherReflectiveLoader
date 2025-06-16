@@ -12,3 +12,6 @@ Now shellcode is able to run assembly in target process
 =========================================================
 v2.0.1
 Resolved RtlExitUserThread and NtFreeVirtualMemory
+=========================================================
+v2.0.2
+Added Suicide stub

@@ -38,7 +38,7 @@ static void* FindExportAddress(HMODULE, const char*);
 
 extern "C" __declspec(noinline) void __stdcall shellcode(LPVOID);
 extern "C" int AddTwoNumbers(int a, int b);
-extern "C" void Suicide();
+extern "C" void Suicide(BYTE* pBase, void* my_NtFreeVirtualMemory, void* my_RtlExitUserThread);
 ///////////////////////////////////////////////////////////////////////////////
 
 NTSTATUS SanityCheck()
@@ -414,7 +414,6 @@ NTSTATUS ManualMap(HANDLE hproc, std::vector <unsigned char> *downloaded_dll)
     norm("\n===========================================ManualMap===========================================");
     /*
         Cleanup & Stealth Tidy-Up
-        Header Zeroing: overwrite the DOS/PE headers at pRemoteBase to hinder scanners.
         Unhook Imports: if any hooked APIs to drive the loader, unhook them in your shellcode region.
         Self-Erase Loader Stub: if inject a small bootstrap stub, have it VirtualFreeEx its own memory once the real DLL is running.
     */
@@ -1597,8 +1596,10 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
         // int result = AddTwoNumbers(x, y);
         // LOG_W(L"Result -> %d", result);
 
-        // Suicide();
-        // Suicide();
+        LOG_W(L"Preparing for self-deletion and exit via assembly suicide stub...");
+        Suicide(pResources->ResourceBase, my_NtFreeVirtualMemory, my_RtlExitUserThread);
+
+        LOG_W(L"!!!! ERROR: Returned from Suicide Stub !!!!");
 
         LOG_W(L"            Suicide\n-----------------------------------------------------------");
         #pragma endregion
