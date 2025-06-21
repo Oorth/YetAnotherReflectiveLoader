@@ -18,3 +18,6 @@ Added Suicide stub
 =========================================================
 v2.0.3
 Suicide stub needs fix
+=========================================================
+v2.0.4
+Trying using ntprotectvirtualmemory to make the stack executable
