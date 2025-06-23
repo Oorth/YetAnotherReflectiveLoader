@@ -24,3 +24,6 @@ Trying using ntprotectvirtualmemory to make the stack executable
 =========================================================
 v2.0.5
 NtvirtualProtect is returning 0 but memory rights didnt change
+=========================================================
+v2.1.0
+Shellcode wipes Resources and Itself and exits the thread
