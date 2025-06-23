@@ -25,7 +25,7 @@ _STUB SEGMENT
         ; RCX = pBaseAddressToFree
         ; RDX = resolved_pfnNtFreeVirtualMemory
         ; R8  = resolved_pfnRtlExitUserThread
-        ; R9  = resolved_pfnVirtualProtect
+        ; R9  = resolved_pfnNtProtectVirtualMemory
 
         ; int 3
 
@@ -46,7 +46,7 @@ _STUB SEGMENT
         mov r12, rcx                        ; r12 = pBaseAddressToFree
         mov r13, rdx                        ; r13 = pfnNtFreeVirtualMemory
         mov r14, r8                         ; r14 = pfnRtlExitUserThread
-        mov r15, r9                         ; r15 = pfnVirtualProtect
+        mov r15, r9                         ; r15 = pfnNtProtectVirtualMemory
         
 
         mov byte ptr [rbp - 40h], 48h       ; Micro-stub byte 0     ---
@@ -76,39 +76,52 @@ _STUB SEGMENT
         ; ;-----------------------------------------------------------------------------------------------
 
         ; --- Attempt to Call NtProtectVirtualMemory ---
-        ; Args for NtProtectVirtualMemory(HANDLE ProcessHandle, PVOID* BaseAddress, PULONG NumberOfBytesToProtect, ULONG NewAccessProtection, PULONG OldAccessProtection)
+        ; Args for NtProtectVirtualMemory(HANDLE ProcessHandle, PVOID* BaseAddress, PSIZE_T RegionSize, ULONG NewAccessProtection, PULONG OldAccessProtection)
         ; RCX = ProcessHandle
-        ; RDX = BaseAddress
-        ; R8  = NumberOfBytesToProtect
-        ; R9  = NewAccessProtection (pointer to a DWORD on stack)
-        ; on stack OldAccessProtection
+        ; RDX = BaseAddress (pointer to pointer)
+        ; R8  = RegionSize (pointer to SIZE_T)
+        ; R9  = NewAccessProtection
+        ; [rsp+0x28] = OldAccessProtection (pointer)
         ; int 3
+
         ; Set up arguments for NtProtectVirtualMemory
         xor rcx, rcx
-        dec rcx                             ; RCX = -1 (HANDLE hProcess = NtCurrentProcess)
+        dec rcx                                 ; RCX = -1 (HANDLE hProcess = NtCurrentProcess)
 
         mov rax, r11
-        and rax, -1000h                     ; Page-align it downwards
-        mov [rbp - 48h], rax                ; Store base address (micro-stub) at [rbp - 48h]
-        lea rdx, [rbp - 48h]                ; RDX = &BaseAddress (pointer to base address)
+        and rax, -1000h                         ; Page-align it downwards
+        mov [rbp - 48h], rax                    ; Store base address (micro-stub) at [rbp - 48h]
+        lea rdx, [rbp - 48h]                    ; RDX = &BaseAddress (pointer to base address)
 
-        mov dword ptr [rbp - 4Ch], 1000h    ; RegionSize = 0x1000 (one page)
-        lea r8, [rbp - 4Ch]                 ; R8 = &RegionSize (pointer to region size)
+        mov qword ptr [rbp - 50h], 1000h        ; RegionSize = 0x1000 (one page, 64-bit)
+        lea r8, [rbp - 50h]                     ; R8 = &RegionSize (pointer to region size)
 
-        mov r9d, 20h                        ; R9D = NewAccessProtection = PAGE_EXECUTE_READ (0x20)
+        mov dword ptr [rbp - 54h], 20h          ; NewAccessProtection = PAGE_EXECUTE_READ (0x20)
+        mov r9d, dword ptr [rbp - 54h]          ; R9 = PAGE_EXECUTE_READ
 
-        lea rax, [rbp - 50h]                ; RAX = pointer to where OldAccessProtection will be stored
-        mov dword ptr [rbp - 50h], 0        ; Zero out OldProtect space
+        mov dword ptr [rbp - 58h], 0            ; Zero out OldProtect space
+        lea rax, [rbp - 58h]                    ; RAX = pointer to where OldAccessProtection will be stored
 
-        sub rsp, 20h                        ; shadow space for Win64 calling convention
-        mov [rsp + 20h], rax                ; 5th argument (OldAccessProtection) on stack
+        ; Win64 calling convention: shadow space (32 bytes) must be allocated before any call
+        sub rsp, 28h                            ; Allocate 32 bytes shadow space (0x28)
+        mov [rsp + 20h], rax                    ; 5th argument (OldAccessProtection) at [rsp+0x20]
         int 3
-        call r15                            ; Call pfnNtProtectVirtualMemory
-        
+        call r15                                ; Call pfnNtProtectVirtualMemory
         int 3
-        add rsp, 20h                        ; clean up shadow space
+        add rsp, 28h                            ; Clean up shadow space
+
+        ; ; Check if the call succeeded (RAX == 0 means STATUS_SUCCESS)
+        ; test rax, rax
+        ; jnz  ntprotect_failed                 ; Jump if not zero (error)
+                
+
+        ; mov rax, rsp                          ; Ensure 16-byte stack alignment before further calls or return
+        ; and rax, 0Fh
+        ; int 3
+        ; jz  stack_aligned
+        ; sub rsp, 8                            ; Align stack to 16 bytes if needed
+        ; stack_aligned:
         ;-----------------------------------------------------------------------------------------------
-
         ; ; ; --- Set up Arguments for NtFreeVirtualMemory(hProcess, &BaseAddress, &RegionSize, FreeType) ---
         
         ; mov qword ptr [rbp - 50h], r12      ; Store BaseAddressToFree value
@@ -152,6 +165,11 @@ _STUB SEGMENT
 
         ; int 3
         ; jmp rax
+
+        ntprotect_failed:
+            int 3                               ; Breakpoint after NtProtectVirtualMemory call for debugging
+            int 3
+            add rsp, 28h                        ; clean up shadow space (restore 28h subtracted earlier)
 
     Suicide ENDP
 

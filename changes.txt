@@ -21,3 +21,6 @@ Suicide stub needs fix
 =========================================================
 v2.0.4
 Trying using ntprotectvirtualmemory to make the stack executable
+=========================================================
+v2.0.5
+NtvirtualProtect is returning 0 but memory rights didnt change
