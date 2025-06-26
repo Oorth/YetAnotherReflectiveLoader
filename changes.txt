@@ -27,3 +27,6 @@ NtvirtualProtect is returning 0 but memory rights didnt change
 =========================================================
 v2.1.0
 Shellcode wipes Resources and Itself and exits the thread
+=========================================================
+v2.1.1
+BUG -> If the dll thread exits after the suicide... Access violation

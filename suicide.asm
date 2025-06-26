@@ -39,13 +39,9 @@ _STUB SEGMENT
         push r14
 
         ; --- Allocate Stack Space for Local Variables ---
-        ; We need space for:
         ; - Micro-stub code (e.g., 6 bytes for 'xor rcx, rcx; jmp r14')
         ; - NtProtectVirtualMemory arguments (PVOID* BaseAddress, PSIZE_T RegionSize, PULONG OldAccessProtection)
-        ;   These are pointers to values that will be stored on the stack.
         ;   BaseAddress (8 bytes) + RegionSize (8 bytes) + OldAccessProtection (4 bytes) = 20 bytes for values.
-        ;   These values need to be at addresses relative to RBP.
-        ;   Let's ensure we have enough space for these and any alignment.
         ;   The lowest RBP offset used for locals will be [rbp - 98h] for OldProtect.
         ;   So, we need at least 0xA0 (160 bytes) to cover this and provide padding for alignment.
         sub rsp, 0A0h ; Allocate 0xA0 (160 bytes) for this function's stack frame. Ensures 16-byte alignment.
@@ -110,19 +106,16 @@ _STUB SEGMENT
         mov r9d, 8000h                      ; R9D = MEM_RELEASE (0x8000)
 
         ; --- Stack Management for the NtFreeVirtualMemory Call ---
-
-        ; Instead of 'call r13' (which would return here), we will:
-        ; 1. Push the address of our micro-stub onto the stack.
-        ; 2. JUMP to NtFreeVirtualMemory (R13).
-        ; This makes NtFreeVirtualMemory return directly to our micro-stub.
         lea rax, [rbp - 40h]                ; RAX = Address of the micro-stub on the stack
         sub rsp, 20h                        ; Allocate 0x20 bytes for shadow space
 
         push rax                            ; Push micro-stub address onto stack, RSP 8-byte aligned (original RSP - 0x20 - 0x8)
-
         ; int 3
         jmp r13
         ; int 3
+
+        ; lea rax, [rbp - 40h]                ; RAX = Address of the micro-stub on the stack
+        ; jmp rax
 
         ;-----------------------------------------------------------------------------------------------------------------------
 
