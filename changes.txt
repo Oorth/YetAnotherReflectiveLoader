@@ -30,3 +30,6 @@ Shellcode wipes Resources and Itself and exits the thread
 =========================================================
 v2.1.1
 BUG -> If the dll thread exits after the suicide... Access violation
+=========================================================
+v2.2.0
+FIXED the deadlock, now the dll exits without causing a crash

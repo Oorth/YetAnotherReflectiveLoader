@@ -403,7 +403,7 @@ NTSTATUS ManualMap(HANDLE hproc, std::vector <unsigned char> *downloaded_dll)
     {
         fuk("Failed to create a thread shellcode ", GetLastError());
         return 0;
-    } norm("\nThread id -> ", std::dec, CYAN"", ShellcodeThreadId);
+    } norm("\nThread id -> ", std::dec, CYAN"", (int)ShellcodeThreadId);
 
 
     norm("\n=_=_=_=_=_=_=_=_=_=_=_=_=_Cpy Shellcode_=_=_=_=_=_=_=_=_=_=_=_=_=");
@@ -515,12 +515,17 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
     typedef NTSTATUS(NTAPI* pfnNtProtectVirtualMemory)(HANDLE ProcessHandle, PVOID* BaseAddress, PULONG NumberOfBytesToProtect, ULONG NewAccessProtection, PULONG OldAccessProtection);
     typedef void(NTAPI* pfnRtlExitUserThread)(NTSTATUS ExitStatus);
     typedef NTSTATUS(NTAPI* pfnNtDelayExecution)(BOOL Alertable, PLARGE_INTEGER DelayInterval);
+    typedef PVOID(NTAPI* pfnRtlAllocateHeap)(PVOID HeapHandle, ULONG Flags, SIZE_T Size);
+    typedef BOOL(NTAPI* pfnRtlFreeHeap)(PVOID HeapHandle, ULONG Flags, PVOID BaseAddress);
     ///////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
     typedef struct _DLLMAIN_THREAD_PARAMS
     {
         pfnDLLMain pfnDllMain;
         HINSTANCE hinstDLL;
+        VOID* vpAllocatedHeap;
+        pfnRtlFreeHeap pRtlFreeHeap;
+        VOID* vpTarget_process_Heap;
         // DWORD fdwReason;
         // LPVOID lpvReserved;
         // HANDLE hCompletionEvent; // For advanced synchronization
@@ -542,7 +547,9 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
     __declspec(allocate(".stub")) static const CHAR cNtFreeVirtualMemoryFunction[] = "NtFreeVirtualMemory";
     __declspec(allocate(".stub")) static const CHAR cRtlExitUserThreadFunction[] = "RtlExitUserThread";
     __declspec(allocate(".stub")) static const CHAR cNtProtectVirtualMemoryFunction[] = "NtProtectVirtualMemory"; 
-    __declspec(allocate(".stub")) static const CHAR cNtDelayExecutionFunction[] = "NtDelayExecution"; 
+    __declspec(allocate(".stub")) static const CHAR cNtDelayExecutionFunction[] = "NtDelayExecution";
+    __declspec(allocate(".stub")) static const CHAR cRtlAllocateHeapFunction[] = "RtlAllocateHeap";
+    __declspec(allocate(".stub")) static const CHAR cRtlFreeHeapFunction[] = "RtlFreeHeap";
 
     __declspec(allocate(".stub")) pfnMessageBoxW my_MessageBoxW = nullptr;
     __declspec(allocate(".stub")) pfnOutputDebugStringW my_OutputDebugStringW = nullptr;
@@ -555,11 +562,13 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
     __declspec(allocate(".stub")) pfnRtlExitUserThread my_RtlExitUserThread = nullptr;
     __declspec(allocate(".stub")) pfnNtProtectVirtualMemory my_NtProtectVirtualMemory = nullptr;
     __declspec(allocate(".stub")) pfnNtDelayExecution my_NtDelayExecution = nullptr;
+    __declspec(allocate(".stub")) pfnRtlAllocateHeap my_RtlAllocateHeap = nullptr;
+    __declspec(allocate(".stub")) pfnRtlFreeHeap my_RtlFreeHeap = nullptr;
 
     __declspec(allocate(".stub")) static const WCHAR g_hexChars[] = L"0123456789ABCDEF";
     __declspec(allocate(".stub")) static WCHAR g_shellcodeLogBuffer[256];
 
-    __declspec(allocate(".stub")) static DLLMAIN_THREAD_PARAMS g_dllMainParams;
+    // __declspec(allocate(".stub")) static DLLMAIN_THREAD_PARAMS dllMainParams;
     ///////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
     __declspec(noinline) void __stdcall HelperSplitFilename(const WCHAR* full, SIZE_T fullLen, const WCHAR** outName, SIZE_T* outLen)
@@ -1026,21 +1035,31 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
         else return (void*)addr;
     }
 
-    __declspec(noinline) static DWORD WINAPI DllMainThreadRunner(LPVOID lpParam)
+    __declspec(noinline) static DWORD WINAPI DllMainThreadRunner(LPVOID lp_Passed_HeapParameters)
     {
         pfnDLLMain local_pfnDllMain;
         HINSTANCE local_hinstDLL;
+        pfnRtlFreeHeap local_pfnRtlFreeHeap;
+        VOID* local_vpAllocatedHeap;
+        VOID* local_vp_target_processHeap;
 
-        if (!lpParam) return 1;
+        if (!lp_Passed_HeapParameters) return 1;
 
         {
-            PDLLMAIN_THREAD_PARAMS params = (PDLLMAIN_THREAD_PARAMS)lpParam;
-            if (!params || !params->pfnDllMain || !params->hinstDLL) return 1;
+            PDLLMAIN_THREAD_PARAMS params = (PDLLMAIN_THREAD_PARAMS)lp_Passed_HeapParameters;
+            if (!params->pfnDllMain || !params->hinstDLL || !params->vpAllocatedHeap || !params->pRtlFreeHeap) return 1;
 
             local_pfnDllMain = params->pfnDllMain;
-            local_hinstDLL   = params->hinstDLL;
+            local_hinstDLL = params->hinstDLL;
+            local_vpAllocatedHeap = params->vpAllocatedHeap;
+            local_pfnRtlFreeHeap = params->pRtlFreeHeap;
+            local_vp_target_processHeap = params->vpTarget_process_Heap;
+
             
-            BOOL result = params->pfnDllMain(params->hinstDLL, DLL_PROCESS_ATTACH, NULL);
+            // BOOL result = params->pfnDllMain(params->hinstDLL, DLL_PROCESS_ATTACH, NULL);
+            BOOL result = local_pfnDllMain(local_hinstDLL, DLL_PROCESS_ATTACH, NULL);
+            local_pfnRtlFreeHeap(local_vp_target_processHeap, 0, local_vpAllocatedHeap);
+
             return result ? 0 : 1;
         }
 
@@ -1159,6 +1178,12 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
         
         my_NtDelayExecution = (pfnNtDelayExecution)ShellcodeFindExportAddress(sLibs.hHookedNtdll, cNtDelayExecutionFunction, my_LoadLibraryA);
         if(my_NtDelayExecution == NULL) __debugbreak();
+        
+        my_RtlAllocateHeap = (pfnRtlAllocateHeap)ShellcodeFindExportAddress(sLibs.hHookedNtdll, cRtlAllocateHeapFunction, my_LoadLibraryA);
+        if(my_RtlAllocateHeap == NULL) __debugbreak();
+        
+        my_RtlFreeHeap = (pfnRtlFreeHeap)ShellcodeFindExportAddress(sLibs.hHookedNtdll, cRtlFreeHeapFunction, my_LoadLibraryA);
+        if(my_RtlFreeHeap == NULL) __debugbreak();
         
         ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -1469,23 +1494,44 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
 
         LOG_W(L"            Call DllMain");
 
-        DWORD rvaOfEntryPoint = pOptionalHeader_injected_dll->AddressOfEntryPoint;
+        HANDLE hTargetProcessHeap = nullptr;
+        BYTE* pPEB_bytes = (BYTE*)pPEB;
 
+        hTargetProcessHeap = (HANDLE)(*(PDWORD_PTR)(pPEB_bytes + 0x30));
+        LOG_W(L"Located the Target Process heap at -> 0x%p", (void*)hTargetProcessHeap);
+
+        void* vpAllocatedHeap = my_RtlAllocateHeap(hTargetProcessHeap, HEAP_ZERO_MEMORY, sizeof(DLLMAIN_THREAD_PARAMS));
+        if(!vpAllocatedHeap) {LOG_W(L"[!!!!] Could not allocate the heap [!!!!]"); return;}
+
+        PDLLMAIN_THREAD_PARAMS pHeapParams = reinterpret_cast<PDLLMAIN_THREAD_PARAMS>(vpAllocatedHeap);
+
+
+        DWORD rvaOfEntryPoint = pOptionalHeader_injected_dll->AddressOfEntryPoint;
         if (rvaOfEntryPoint == 0) LOG_W(L"DLL has no entry point. Skipping DllMain call.");
         else
         {
             pfnDLLMain pfnDllMain = (pfnDLLMain)(pResources->Injected_dll_base + rvaOfEntryPoint);
             LOG_W(L"Calculated DllMain address: 0x%p", (void*)pfnDllMain);
 
-            g_dllMainParams.pfnDllMain = pfnDllMain;
-            g_dllMainParams.hinstDLL = (HINSTANCE)pResources->Injected_dll_base;
+            pHeapParams->pfnDllMain = pfnDllMain;
+            pHeapParams->hinstDLL = (HINSTANCE)pResources->Injected_dll_base;
+            pHeapParams->vpAllocatedHeap = vpAllocatedHeap;
+            pHeapParams->pRtlFreeHeap = my_RtlFreeHeap;
+            pHeapParams->vpTarget_process_Heap = hTargetProcessHeap;
 
             DWORD dwDllMainThreadId = 0; 
             LOG_W(L"Creating new thread to execute DllMain (0x%p) via DllMainThreadRunner", (void*)pfnDllMain);
-            HANDLE hDllMainThread = my_CreateThread(NULL, 0, DllMainThreadRunner, &g_dllMainParams, 0, &dwDllMainThreadId);
-
-            if (hDllMainThread) LOG_W(L"DllMain thread launched Thread id-> %d Handle-> 0x%p", dwDllMainThreadId, (void*)hDllMainThread);
-            else LOG_W(L"!!!! FAILED to create thread for DllMain. DLL will not initialize. !!!!");
+            HANDLE hDllMainThread = my_CreateThread(NULL, 0, DllMainThreadRunner, pHeapParams, 0, &dwDllMainThreadId);
+            if (hDllMainThread)
+            {
+                LOG_W(L"DllMain thread launched Thread id-> %d Handle-> 0x%p", dwDllMainThreadId, (void*)hDllMainThread);
+                my_CloseHandle(hDllMainThread);
+            }
+            else
+            {
+                LOG_W(L"!!!! FAILED to create thread for DllMain. DLL will not initialize. !!!!");
+                my_RtlFreeHeap(hTargetProcessHeap, 0, vpAllocatedHeap);
+            }
         }
         LOG_W(L"            DllMain Call Attempted\n-----------------------------------------------------------");
         #pragma endregion
