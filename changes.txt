@@ -33,3 +33,6 @@ BUG -> If the dll thread exits after the suicide... Access violation
 =========================================================
 v2.2.0
 FIXED the deadlock, now the dll exits without causing a crash
+=========================================================
+v2.3.0
+Assembly update, made it simple and not use virtual protect
