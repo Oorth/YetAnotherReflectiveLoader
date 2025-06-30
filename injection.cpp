@@ -1569,8 +1569,13 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
         //----------------Filled _CACHED_PROTECTIONS_FOR_REGIONS
 
         WORD SizeOfHeader_injected_dll = pOptionalHeader_injected_dll->SizeOfHeaders;
+
         my_RtlFillMemory(pResources->Injected_dll_base, SizeOfHeader_injected_dll, 0);
         LOG_W(L"Zeroed PE headers from [0x%p] for size [0x%X]", (void*)pResources->Injected_dll_base, SizeOfHeader_injected_dll);
+        
+        DWORD oldHeaderProtect = 0;
+        if (my_VirtualProtect(pResources->Injected_dll_base, SizeOfHeader_injected_dll, PAGE_NOACCESS, &oldHeaderProtect)) LOG_W(L"PE header protection changed to RW (old=0x%X)", oldHeaderProtect);
+        else LOG_W(L"Failed to change PE header protection to RW");
         
         LOG_W(L"            ZeroPEHeader \n-----------------------------------------------------------");
         

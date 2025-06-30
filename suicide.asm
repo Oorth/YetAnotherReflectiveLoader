@@ -36,7 +36,7 @@ _STUB SEGMENT
 
         push r14 ; This reduces RSP by 8.
 
-        int 3
+        ; int 3
         ; --- Jump to NtFreeVirtualMemory ---
         jmp r13
 
@@ -55,7 +55,7 @@ _STUB SEGMENT
         ret                     ; Return to the caller (result is in RAX)
     AddTwoNumbers ENDP
 
-    ; Backup_Suicide PROC
+    Backup_Suicide PROC
 
         ; On entry (x64 __fastcall from C++):
         ; RCX = pBaseAddressToFree
@@ -110,7 +110,7 @@ _STUB SEGMENT
 
         ; push rax                            ; Push micro-stub address onto stack, RSP 8-byte aligned (original RSP - 0x20 - 0x8)
         push r14
-        int 3
+        ; int 3
         jmp r13
         ; int 3
 
