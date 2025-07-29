@@ -28,7 +28,7 @@ if errorlevel 1 (
 tasklist /FI "IMAGENAME eq notepad.exe" 2>NUL | find /I /N "notepad.exe" >NUL
 if errorlevel 1 (
     @REM echo Starting notepad.exe...
-    start /min "" notepad.exe
+    @REM start /min "" notepad.exe
     @REM Give notepad a moment to start up properly
     timeout /t 0 /nobreak >nul
 ) else (
@@ -58,7 +58,7 @@ if defined notepadPID (
     ) else (
         @REM echo DbgView64.exe is NOT running. Starting it...
         if exist "C:\Users\Arth\Desktop\SysinternalsSuite\dbgview64.exe" (
-            start "" "C:\Users\Arth\Desktop\SysinternalsSuite\dbgview64.exe"
+            @REM start "" "C:\Users\Arth\Desktop\SysinternalsSuite\dbgview64.exe"
         ) else (
             @REM echo Error: DbgView64.exe not found at the specified path: "C:\Users\Arth\Desktop\SysinternalsSuite\dbgview64.exe"
         )

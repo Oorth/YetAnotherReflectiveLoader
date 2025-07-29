@@ -39,3 +39,6 @@ Assembly update, made it simple and not use virtual protect
 =========================================================
 v2.3.1
 made the injected peHeader PAGE_NOACCESS
+=========================================================
+v3.0.0
+Driver update

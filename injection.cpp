@@ -517,6 +517,8 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
     typedef NTSTATUS(NTAPI* pfnNtDelayExecution)(BOOL Alertable, PLARGE_INTEGER DelayInterval);
     typedef PVOID(NTAPI* pfnRtlAllocateHeap)(PVOID HeapHandle, ULONG Flags, SIZE_T Size);
     typedef BOOL(NTAPI* pfnRtlFreeHeap)(PVOID HeapHandle, ULONG Flags, PVOID BaseAddress);
+    
+    typedef HANDLE (WINAPI* pfnCreateFileW)(LPCWSTR lpFileName, DWORD dwDesiredAccess, DWORD dwShareMode, LPSECURITY_ATTRIBUTES lpSecurityAttributes, DWORD dwCreationDisposition, DWORD dwFlagsAndAttributes, HANDLE hTemplateFile);
     ///////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
     typedef struct _DLLMAIN_THREAD_PARAMS
@@ -550,6 +552,7 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
     __declspec(allocate(".stub")) static const CHAR cNtDelayExecutionFunction[] = "NtDelayExecution";
     __declspec(allocate(".stub")) static const CHAR cRtlAllocateHeapFunction[] = "RtlAllocateHeap";
     __declspec(allocate(".stub")) static const CHAR cRtlFreeHeapFunction[] = "RtlFreeHeap";
+    __declspec(allocate(".stub")) static const CHAR cCreateFileWFunction[] = "CreateFileW";
 
     __declspec(allocate(".stub")) pfnMessageBoxW my_MessageBoxW = nullptr;
     __declspec(allocate(".stub")) pfnOutputDebugStringW my_OutputDebugStringW = nullptr;
@@ -564,6 +567,8 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
     __declspec(allocate(".stub")) pfnNtDelayExecution my_NtDelayExecution = nullptr;
     __declspec(allocate(".stub")) pfnRtlAllocateHeap my_RtlAllocateHeap = nullptr;
     __declspec(allocate(".stub")) pfnRtlFreeHeap my_RtlFreeHeap = nullptr;
+    
+    __declspec(allocate(".stub")) pfnCreateFileW my_CreateFileW = nullptr;
 
     __declspec(allocate(".stub")) static const WCHAR g_hexChars[] = L"0123456789ABCDEF";
     __declspec(allocate(".stub")) static WCHAR g_shellcodeLogBuffer[256];
@@ -949,8 +954,8 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
         // Check if this RVA points within the export directory itself (indicates a forwarded export)
         if (funcRVA >= pExportDataDir->VirtualAddress && funcRVA < (pExportDataDir->VirtualAddress + pExportDataDir->Size)) 
         {
-            // This is a forwarder string like "OTHERDLL.OtherFunction" or "OTHERDLL.#123" 
-            char* originalForwarderString = (char*)addr; // The RVA points to this string
+            // This is a forwarder string like "OTHERDLL.OtherFunction"
+            char* originalForwarderString = (char*)addr;
             LOG_W(L"    [SFEA] Proc %p from module 0x%p is forwarded to: '%hs'", lpProcNameOrOrdinal, hModule, originalForwarderString);
 
             if (!pLoadLibraryAFunc)
@@ -1065,6 +1070,623 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
 
     }
 
+
+    #pragma region Actual_stuff_commented
+    // __declspec(noinline) void __stdcall shellcode(LPVOID lpParameter)
+    // {
+    //     #pragma region Shellcode_setup
+
+    //     struct _LIBS
+    //     {
+    //         HMODULE hHookedNtdll;
+    //         HMODULE hUnhookedNtdll;
+    //         HMODULE hKERNEL32;
+    //         HMODULE hKERNELBASE;
+    //         HMODULE hUsr32;
+    //     }sLibs;
+
+    //     typedef struct _CACHED_PROTECTIONS_OF_REGIONS
+    //     {
+    //         DWORD CachedSectionRVA;
+    //         DWORD Cachedcharacteristics;
+    //         BYTE* pCachedSectionMemoryBase;
+    //         SIZE_T CachedSectionVirtualSize;
+    //         char CachedcurrentSectionNameAnsi[IMAGE_SIZEOF_SHORT_NAME + 1];
+    //     } CACHED_PROTECTIONS_OF_REGIONS, *PCACHED_PROTECTIONS_OF_REGIONS;
+
+    //     typedef struct _MY_PEB_LDR_DATA
+    //     {
+    //         ULONG Length;
+    //         BOOLEAN Initialized;
+    //         PVOID  SsHandle;
+    //         LIST_ENTRY InLoadOrderModuleList;
+    //         LIST_ENTRY InMemoryOrderModuleList;
+    //         LIST_ENTRY InInitializationOrderModuleList;
+    //     } MY_PEB_LDR_DATA, *MY_PPEB_LDR_DATA;
+
+    //     typedef struct _LDR_DATA_TABLE_ENTRY
+    //     {
+    //         LIST_ENTRY InLoadOrderLinks;
+    //         LIST_ENTRY InMemoryOrderLinks;
+    //         LIST_ENTRY InInitializationOrderLinks;
+    //         PVOID DllBase;
+    //         UNICODE_STRING FullDllName;
+    //         UNICODE_STRING BaseDllName;
+    //     } LDR_DATA_TABLE_ENTRY, *PLDR_DATA_TABLE_ENTRY;    
+
+    //     _RESOURCES* pResources = (_RESOURCES*)lpParameter;
+
+    //     #ifdef _M_IX86
+    //         PEB* pPEB = (PEB*) __readfsdword(0x30);
+    //     #else
+    //         PEB* pPEB = (PEB*) __readgsqword(0x60);   
+    //     #endif
+        
+    //     MY_PEB_LDR_DATA* pLdr = (MY_PEB_LDR_DATA*)pPEB->Ldr;
+    //     auto head = &pLdr->InLoadOrderModuleList;
+    //     auto current = head->Flink;    // first entry is the EXE itself
+        
+    //     //walk load‑order
+    //     while(current != head)
+    //     {
+    //         auto entry = CONTAINING_RECORD(current, LDR_DATA_TABLE_ENTRY, InLoadOrderLinks);
+
+    //         if(entry->BaseDllName.Buffer)
+    //         {
+    //             const WCHAR* namePtr;
+    //             SIZE_T nameLen;
+
+    //             HelperSplitFilename(entry->BaseDllName.Buffer, entry->BaseDllName.Length / sizeof(WCHAR), &namePtr, &nameLen);
+
+    //             SIZE_T k32len = sizeof(kUsr32)/sizeof(WCHAR) - 1;
+    //             if(nameLen == k32len && isSameW(namePtr, kUsr32, k32len)) sLibs.hUsr32 = (HMODULE)entry->DllBase;
+
+    //             k32len = sizeof(hKernelbase)/sizeof(WCHAR) - 1;
+    //             if(nameLen == k32len && isSameW(namePtr, hKernelbase, k32len)) sLibs.hKERNELBASE = (HMODULE)entry->DllBase;
+
+    //             k32len = sizeof(kNtdll)/sizeof(WCHAR) - 1;
+    //             if(nameLen == k32len && isSameW(namePtr, kNtdll, k32len)) sLibs.hHookedNtdll = (HMODULE)entry->DllBase;
+    //         }
+    //         current = current->Flink;
+    //     }
+    //     if(sLibs.hUsr32 == NULL || sLibs.hKERNELBASE == NULL) __debugbreak();
+        
+    //     ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+    //     my_OutputDebugStringW = (pfnOutputDebugStringW)ShellcodeFindExportAddress(sLibs.hKERNELBASE, cOutputDebugStringWFunction, my_LoadLibraryA);
+    //     if(my_OutputDebugStringW == NULL) __debugbreak();
+
+    //     my_MessageBoxW = (pfnMessageBoxW)ShellcodeFindExportAddress(sLibs.hUsr32, cMessageBoxWFunction, my_LoadLibraryA);
+    //     if(my_MessageBoxW == NULL) __debugbreak();
+
+    //     my_LoadLibraryA = (pfnLoadLibraryA)ShellcodeFindExportAddress(sLibs.hKERNELBASE, cLoadLibraryAFunction, my_LoadLibraryA);
+    //     if(my_LoadLibraryA == NULL) __debugbreak();
+
+    //     my_VirtualProtect = (pfnVirtualProtect)ShellcodeFindExportAddress(sLibs.hKERNELBASE, cVirtualProtectFunction, my_LoadLibraryA);
+    //     if(my_VirtualProtect == NULL) __debugbreak();
+
+    //     my_CreateThread = (pfnCreateThread)ShellcodeFindExportAddress(sLibs.hKERNELBASE, cCreateThreadFunction, my_LoadLibraryA);
+    //     if(my_CreateThread == NULL) __debugbreak();
+
+    //     my_CloseHandle = (pfnCloseHandle)ShellcodeFindExportAddress(sLibs.hKERNELBASE, cCloseHandleFunction, my_LoadLibraryA);
+    //     if(my_CloseHandle == NULL) __debugbreak();
+        
+    //     my_RtlFillMemory = (pfnRtlFillMemory)ShellcodeFindExportAddress(sLibs.hHookedNtdll, cRtlFillMemoryFunction, my_LoadLibraryA);
+    //     if(my_RtlFillMemory == NULL) __debugbreak();
+
+    //     my_NtFreeVirtualMemory = (pfnNtFreeVirtualMemory)ShellcodeFindExportAddress(sLibs.hHookedNtdll, cNtFreeVirtualMemoryFunction, my_LoadLibraryA);
+    //     if(my_NtFreeVirtualMemory == NULL) __debugbreak();
+
+    //     my_RtlExitUserThread = (pfnRtlExitUserThread)ShellcodeFindExportAddress(sLibs.hHookedNtdll, cRtlExitUserThreadFunction, my_LoadLibraryA);
+    //     if(my_RtlExitUserThread == NULL) __debugbreak();
+
+    //     my_NtProtectVirtualMemory = (pfnNtProtectVirtualMemory)ShellcodeFindExportAddress(sLibs.hHookedNtdll, cNtProtectVirtualMemoryFunction, my_LoadLibraryA);
+    //     if(my_NtProtectVirtualMemory == NULL) __debugbreak();
+        
+    //     my_NtDelayExecution = (pfnNtDelayExecution)ShellcodeFindExportAddress(sLibs.hHookedNtdll, cNtDelayExecutionFunction, my_LoadLibraryA);
+    //     if(my_NtDelayExecution == NULL) __debugbreak();
+        
+    //     my_RtlAllocateHeap = (pfnRtlAllocateHeap)ShellcodeFindExportAddress(sLibs.hHookedNtdll, cRtlAllocateHeapFunction, my_LoadLibraryA);
+    //     if(my_RtlAllocateHeap == NULL) __debugbreak();
+        
+    //     my_RtlFreeHeap = (pfnRtlFreeHeap)ShellcodeFindExportAddress(sLibs.hHookedNtdll, cRtlFreeHeapFunction, my_LoadLibraryA);
+    //     if(my_RtlFreeHeap == NULL) __debugbreak();
+        
+    //     ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+    //     // __declspec(allocate(".stub")) static const WCHAR INJECTED[] = L"INJECTED"; __declspec(allocate(".stub")) static const WCHAR s2[] = L"Hello from injected shellcode!";
+    //     // // my_MessageBoxW(NULL, s2, INJECTED, MB_OK | MB_TOPMOST);
+    //     // my_OutputDebugStringW(s2);
+
+    //     __declspec(allocate(".stub")) static const WCHAR s2[] = L"Hello from injected shellcode!";
+    //     ShellcodeSprintfW(g_shellcodeLogBuffer, sizeof(g_shellcodeLogBuffer)/sizeof(WCHAR), s2);
+        
+    //     LOG_W(L"//////////////////////////////////////////////////////////");
+    //     LOG_W(L"Injected_dll_base -> 0x%p", pResources->Injected_dll_base);
+    //     LOG_W(L"Resource_base ->  0x%p\n", pResources->ResourceBase);
+    //     LOG_W(L"Shellcode_base ->  0x%p", pResources->Injected_Shellcode_base);
+    //     LOG_W(L"-----------------------------------------------------------");
+
+    //     IMAGE_DOS_HEADER* pDosHeader_injected_dll = (IMAGE_DOS_HEADER*) pResources->Injected_dll_base;
+    //     if(pDosHeader_injected_dll->e_magic != 0x5A4D)
+    //     {
+    //         LOG_W(L"[!!!!] Invalid DOSHeader signature");
+    //         return;
+    //     }else LOG_W(L"DOSHeader signature-> 0x%hX [OK]", pDosHeader_injected_dll->e_magic);
+        
+        
+    //     DWORD peOffset_injected_dll = pDosHeader_injected_dll->e_lfanew;
+        
+    //     IMAGE_NT_HEADERS* pNtHeader_injected_dll = (IMAGE_NT_HEADERS*)(pResources->Injected_dll_base + peOffset_injected_dll);
+    //     if(pNtHeader_injected_dll->Signature != IMAGE_NT_SIGNATURE)
+    //     {
+    //         LOG_W(L"[!!!!] Invalid NTHeader signature");
+    //         return;
+    //     }else LOG_W(L"NTHeader signature-> 0x%X [OK]", pNtHeader_injected_dll->Signature);
+
+    //     IMAGE_OPTIONAL_HEADER* pOptionalHeader_injected_dll = &pNtHeader_injected_dll->OptionalHeader;
+    //     if(pOptionalHeader_injected_dll->Magic != IMAGE_NT_OPTIONAL_HDR_MAGIC)
+    //     {
+    //         LOG_W(L"[!!!!] Invalid OptionalHeader Magic");
+    //         return;
+    //     }else LOG_W(L"OptionalHeader Magic-> 0x%X [OK]", pOptionalHeader_injected_dll->Magic);
+
+    //     IMAGE_FILE_HEADER* pFileHeader_injected_dll = (IMAGE_FILE_HEADER*)(&pNtHeader_injected_dll->FileHeader);
+    //     if(pFileHeader_injected_dll->Machine != IMAGE_FILE_MACHINE_AMD64)
+    //     {
+    //         LOG_W(L"[!!!!] Invalid FileHeader Machine type");
+    //         return;
+    //     }else LOG_W(L"FileHeader Machine-> 0x%X [OK]", pFileHeader_injected_dll->Machine);
+    //     LOG_W(L"-----------------------------------------------------------");
+        
+    //     #pragma endregion
+
+    //     //==========================================================================================
+
+    //     #pragma region Relocations
+
+    //     size_t delta = (uintptr_t)pResources->Injected_dll_base - pOptionalHeader_injected_dll->ImageBase;
+    //     if(delta)
+    //     {
+    //         LOG_W(L"            Relocation\nDelta calculated: 0x%p", (void*)delta);
+
+    //         IMAGE_DATA_DIRECTORY* dataDir = pOptionalHeader_injected_dll->DataDirectory;
+    //         IMAGE_DATA_DIRECTORY relocDirEntry = dataDir[IMAGE_DIRECTORY_ENTRY_BASERELOC];
+
+    //         if(relocDirEntry.Size > sizeof(IMAGE_BASE_RELOCATION) && relocDirEntry.VirtualAddress != 0)
+    //         {
+    //             BYTE* pCurrentRelocBlockAddress = pResources->Injected_dll_base + relocDirEntry.VirtualAddress;
+    //             BYTE* pEndOfRelocData = pCurrentRelocBlockAddress + relocDirEntry.Size;
+    //             UINT noOfAbsoluteRelocs = 0, noOfHighlowRelocs = 0, noOfDir64Relocs = 0; 
+
+    //             while(pCurrentRelocBlockAddress < pEndOfRelocData)
+    //             {
+    //                 IMAGE_BASE_RELOCATION* pBlock = (IMAGE_BASE_RELOCATION*)pCurrentRelocBlockAddress;
+
+    //                 if(pBlock->SizeOfBlock == 0) { LOG_W(L"Encountered a relocation block with SizeOfBlock = 0. Ending relocation processing."); break;}
+                    
+    //                 DWORD BaseRVAForBlock = pBlock->VirtualAddress;
+    //                 size_t numberOfEntriesInBlock = (pBlock->SizeOfBlock - sizeof(IMAGE_BASE_RELOCATION)) / 2;                // 2 -> sizeof(word)
+    //                 WORD* pListEntry = (WORD*)(pBlock + 1);
+
+    //                 for(UINT i = 0; i < numberOfEntriesInBlock; ++i)
+    //                 {
+    //                     WORD currentEntry = pListEntry[i];
+    //                     int relocationType = currentEntry >> 12;
+    //                     int offsetInPage = currentEntry & 0x0FFF;
+                        
+    //                     BYTE* pAddressToPatch = pResources->Injected_dll_base + BaseRVAForBlock + offsetInPage;
+
+    //                     switch(relocationType)
+    //                     {
+    //                         case IMAGE_REL_BASED_ABSOLUTE:
+    //                         {
+    //                             //Do nothing. This is a padding/sentinel entry
+    //                             noOfAbsoluteRelocs += 1;
+    //                             break;
+    //                         }
+
+    //                         case IMAGE_REL_BASED_HIGHLOW:
+    //                         {
+    //                             DWORD* patchValuePointer = (DWORD*)pAddressToPatch;
+    //                             *patchValuePointer = *patchValuePointer + (DWORD)delta;
+                                
+    //                             // LOG_W(L"Applied HIGHLOW relocation at [0x%p] by adding [0x%X]", pAddressToPatch, delta);
+    //                             noOfHighlowRelocs +=1;
+    //                             break;
+    //                         }           
+
+    //                         case IMAGE_REL_BASED_DIR64:
+    //                         {
+    //                             DWORD_PTR* patchValuePointer = (DWORD_PTR*)pAddressToPatch;
+    //                             *patchValuePointer = *patchValuePointer + delta;
+
+    //                             // LOG_W(L"Applied IMAGE_REL_BASED_DIR64 relocation at [0x%p] by adding [0x%X]", pAddressToPatch, delta);
+    //                             noOfDir64Relocs +=1;
+    //                             break;
+    //                         }
+
+    //                         default:
+    //                         {
+    //                             LOG_W(L"Unknown or unhandled relocation type: 0x%hX at 0x%p", (WORD)relocationType, pAddressToPatch);
+    //                             break;
+    //                         }              
+    //                     }
+    //                 }
+    //                 pCurrentRelocBlockAddress = pCurrentRelocBlockAddress + pBlock->SizeOfBlock;
+    //             }
+    //             LOG_W(L"Absolute relocations: %d\nHighLow relocations: %d\nDir64 relocations: %d", noOfAbsoluteRelocs, noOfHighlowRelocs, noOfDir64Relocs);
+    //         }
+    //         else LOG_W(L"No relocation data found or .reloc section is empty");
+
+    //         LOG_W(L"            Relocations Done\n-----------------------------------------------------------");
+
+    //     }
+    //     else LOG_W(L"No relocations required\n-----------------------------------------------------------");
+    //     #pragma endregion
+
+    //     //==========================================================================================
+
+    //     #pragma region TLSCallbacks
+
+    //     LOG_W(L"            TLS_Callbacks");
+
+    //     IMAGE_DATA_DIRECTORY* pDataDirectoryArray = pNtHeader_injected_dll->OptionalHeader.DataDirectory;
+    //     IMAGE_DATA_DIRECTORY tlsDirEntryStruct  = pDataDirectoryArray[IMAGE_DIRECTORY_ENTRY_TLS];
+
+    //     if(tlsDirEntryStruct.Size < sizeof(IMAGE_TLS_DIRECTORY) || tlsDirEntryStruct.VirtualAddress == 0)
+    //     {
+    //         LOG_W(L"No TLS Directory found, or its size is invalid/empty. Skipping");
+    //     }
+    //     else
+    //     {
+    //         LOG_W(L"TLS Directory Entry: VA=0x%X, Size=0x%X", tlsDirEntryStruct.VirtualAddress, tlsDirEntryStruct.Size);
+
+    //         BYTE* pMemoryAddressOfTlsDirectoryStruct = pResources->Injected_dll_base + tlsDirEntryStruct.VirtualAddress;
+    //         IMAGE_TLS_DIRECTORY* pTlsStruct = (IMAGE_TLS_DIRECTORY*)pMemoryAddressOfTlsDirectoryStruct;
+    //         LOG_W(L"Actual IMAGE_TLS_DIRECTORY structure is at 0x%p", pMemoryAddressOfTlsDirectoryStruct);
+
+    //         uintptr_t vaOfCallbackArrayPointer = pTlsStruct->AddressOfCallBacks;
+    //         if(vaOfCallbackArrayPointer == NULL) LOG_W(L"TLS Directory.AddressOfCallBacks is NULL, no callback array defined");
+    //         else
+    //         {   
+    //             //PIMAGE_TLS_CALLBACK* is a pointer to a pointer to a callback function
+    //             PIMAGE_TLS_CALLBACK* pActualMemoryAddressOfCallbackArray;
+
+    //             if(delta != 0)
+    //             {
+    //                 pActualMemoryAddressOfCallbackArray = (PIMAGE_TLS_CALLBACK*)vaOfCallbackArrayPointer;
+    //                 LOG_W(L"Delta non-zero. Assuming AddressOfCallBacks field (0x%p) absolute ptr to the callback array", (void*)vaOfCallbackArrayPointer);
+    //             }
+    //             else
+    //             {
+    //                 uintptr_t rvaOfCallbackArray = vaOfCallbackArrayPointer - pOptionalHeader_injected_dll->ImageBase;
+    //                 pActualMemoryAddressOfCallbackArray = (PIMAGE_TLS_CALLBACK*)(pResources->Injected_dll_base + rvaOfCallbackArray);
+
+    //                 LOG_W(L"Delta is zero. AddressOfCallBacks field (VA 0x%p) rebased to callback array ptr 0x%p", (void*)vaOfCallbackArrayPointer, (void*)pActualMemoryAddressOfCallbackArray);
+    //             }
+
+    //             PIMAGE_TLS_CALLBACK* currentArrayElementPtr = pActualMemoryAddressOfCallbackArray;
+    //             LOG_W(L"VA of callback array is 0x%p. Actual memory address of this array is 0x%p", vaOfCallbackArrayPointer, pActualMemoryAddressOfCallbackArray);
+
+    //             UINT NoOfCallBacks = 0;
+    //             while(*currentArrayElementPtr != NULL)
+    //             {
+    //                 uintptr_t vaOfIndividualCallback = (uintptr_t)*currentArrayElementPtr;
+    //                 uintptr_t rvaOfIndividualCallback = vaOfIndividualCallback - pOptionalHeader_injected_dll->ImageBase;
+
+    //                 PIMAGE_TLS_CALLBACK actualFunctionAddressToCall = (PIMAGE_TLS_CALLBACK)(pResources->Injected_dll_base + rvaOfIndividualCallback);
+    //                 LOG_W(L"Found TLS callback entry. Original VA of function: 0x%p. Actual function address: 0x%p. Invoking...", (void*)vaOfIndividualCallback, actualFunctionAddressToCall);
+
+    //                 //Call it
+    //                 actualFunctionAddressToCall((PVOID)pResources->Injected_dll_base, DLL_PROCESS_ATTACH, NULL);
+    //                 ++currentArrayElementPtr;
+    //                 ++NoOfCallBacks;
+    //             }
+    //             LOG_W(L"Done TLS callbacks. Total callbacks: %d", NoOfCallBacks);
+    //         }            
+    //     }
+
+    //     LOG_W(L"            TLS_Callbacks\n-----------------------------------------------------------");
+    //     #pragma endregion
+
+    //     //==========================================================================================
+
+    //     #pragma region Import Resolution
+
+    //     IMAGE_DATA_DIRECTORY importDirEntry = pOptionalHeader_injected_dll->DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+    //     if(importDirEntry.VirtualAddress == 0 || importDirEntry.Size < sizeof(IMAGE_DATA_DIRECTORY)) LOG_W(L"No Import Directory found. No imports to resolve");
+    //     else
+    //     {
+    //         BYTE* pCurrentImportDescriptorAddress = pResources->Injected_dll_base + importDirEntry.VirtualAddress;
+    //         IMAGE_IMPORT_DESCRIPTOR* pDesc = (IMAGE_IMPORT_DESCRIPTOR*)pCurrentImportDescriptorAddress;
+
+    //         while(pDesc->Name != 0)
+    //         {
+
+    //             DWORD rvaOfDllName = pDesc->Name;
+    //             char* dllNameString = (char*)(pResources->Injected_dll_base + rvaOfDllName);
+
+    //             LOG_W(L"\n------Processing imports for DLL: [%hs]------", dllNameString);
+                
+    //             HANDLE hDependentdll = my_LoadLibraryA(dllNameString);
+    //             if(hDependentdll == NULL)
+    //             {
+    //                 LOG_W(L"FAILED to load dependent DLL: [%hs]", dllNameString);
+    //                 ++pDesc;
+    //                 continue;
+    //             }
+
+    //             IMAGE_THUNK_DATA* pImportNameTable = NULL;
+    //             IMAGE_THUNK_DATA* pImportAddressTable = NULL;
+
+    //             //The `OriginalFirstThunk` (OFT) contains the information (name or ordinal) used to look up the function
+    //             //The `FirstThunk` (IAT) is the table that gets *patched* with the actual resolved function addresses.
+    //             DWORD rvaOFT = pDesc->OriginalFirstThunk;
+    //             DWORD rvaIAT = pDesc->FirstThunk;
+
+    //             if(rvaOFT != 0) pImportNameTable = (IMAGE_THUNK_DATA*)(pResources->Injected_dll_base + rvaOFT);
+    //             else pImportNameTable = (IMAGE_THUNK_DATA*)(pResources->Injected_dll_base + rvaIAT);
+            
+    //             pImportAddressTable = (IMAGE_THUNK_DATA*)(pResources->Injected_dll_base + rvaIAT);
+    //             LOG_W(L"OFT RVA: 0x%X, IAT RVA: 0x%X. pINT at 0x%p, pIAT at 0x%p", rvaOFT, rvaIAT, pImportNameTable, pImportAddressTable);
+
+    //             UINT SuccessImportResolution = 0, FailImportResolution = 0;
+    //             while(pImportAddressTable->u1.AddressOfData != 0)
+    //             {
+    //                 FARPROC resolvedFunctionAddress = NULL;
+    //                 ULONGLONG currentThunkValue = pImportNameTable->u1.Function;
+
+    //                 if(IMAGE_SNAP_BY_ORDINAL(currentThunkValue))
+    //                 {
+    //                     WORD ordinalToImport = (WORD)IMAGE_ORDINAL(currentThunkValue);
+    //                     //LOG_W(L"  Attempting to import by Ordinal: %d", ordinalToImport);
+
+    //                     resolvedFunctionAddress = (FARPROC)(ShellcodeFindExportAddress(reinterpret_cast<HMODULE>(hDependentdll), (LPCSTR)ordinalToImport, my_LoadLibraryA));
+
+    //                     if (!resolvedFunctionAddress)
+    //                     {
+    //                         LOG_W(L"FAILED to resolve Ordinal %d from %hs", ordinalToImport, dllNameString);
+    //                         ++FailImportResolution;
+    //                     }
+    //                     else
+    //                     {
+    //                         LOG_W(L"Resolved Ordinal %d to 0x%p", ordinalToImport, (void*)resolvedFunctionAddress);
+    //                         ++SuccessImportResolution;
+    //                     }
+    //                 }
+    //                 else    // Importing by Name
+    //                 {
+
+    //                     // u1.AddressOfData contains RVA to IMAGE_IMPORT_BY_NAME structure
+    //                     DWORD rvaImportByName = (DWORD)pImportAddressTable->u1.AddressOfData;
+    //                     IMAGE_IMPORT_BY_NAME* pImportByName = (IMAGE_IMPORT_BY_NAME*)(pResources->Injected_dll_base + rvaImportByName);
+
+    //                     char* functionName = pImportByName->Name;
+                        
+    //                     //LOG_W(L"Attempting to import by Name: '%hs'", functionName);
+    //                     resolvedFunctionAddress = (FARPROC)(ShellcodeFindExportAddress(reinterpret_cast<HMODULE>(hDependentdll), functionName, my_LoadLibraryA));
+
+    //                     if (!resolvedFunctionAddress)
+    //                     {
+    //                         LOG_W(L"[[FAILED]] to resolve Name '%hs' from %hs", functionName, dllNameString);
+    //                         ++FailImportResolution;
+                            
+    //                     }
+    //                     else
+    //                     {
+    //                         LOG_W(L"Resolved Name '%hs' to 0x%p", functionName, (void*)resolvedFunctionAddress);
+    //                         ++SuccessImportResolution;
+    //                     }
+    //                 }
+
+    //                 pImportAddressTable->u1.Function = (ULONGLONG)resolvedFunctionAddress;
+                    
+    //                 ++pImportNameTable;
+    //                 ++pImportAddressTable;
+    //             }
+                
+    //             LOG_W(L"DLL-> [%hs] Success[%d] Fail[%d]------\n", dllNameString, SuccessImportResolution, FailImportResolution);
+
+    //             ++pDesc;
+    //         }
+    //         LOG_W(L"\nAll import descriptors processed");
+    //     }
+    //     LOG_W(L"            Import Resolution Finished\n-----------------------------------------------------------");  
+    //     #pragma endregion
+
+    //     //==========================================================================================
+
+    //     #pragma region Call DLLMain
+
+    //     LOG_W(L"            Call DllMain");
+
+    //     HANDLE hTargetProcessHeap = nullptr;
+    //     BYTE* pPEB_bytes = (BYTE*)pPEB;
+
+    //     hTargetProcessHeap = (HANDLE)(*(PDWORD_PTR)(pPEB_bytes + 0x30));
+    //     LOG_W(L"Located the Target Process heap at -> 0x%p", (void*)hTargetProcessHeap);
+
+    //     void* vpAllocatedHeap = my_RtlAllocateHeap(hTargetProcessHeap, HEAP_ZERO_MEMORY, sizeof(DLLMAIN_THREAD_PARAMS));
+    //     if(!vpAllocatedHeap) {LOG_W(L"[!!!!] Could not allocate the heap [!!!!]"); return;}
+
+    //     PDLLMAIN_THREAD_PARAMS pHeapParams = reinterpret_cast<PDLLMAIN_THREAD_PARAMS>(vpAllocatedHeap);
+
+
+    //     DWORD rvaOfEntryPoint = pOptionalHeader_injected_dll->AddressOfEntryPoint;
+    //     if (rvaOfEntryPoint == 0) LOG_W(L"DLL has no entry point. Skipping DllMain call.");
+    //     else
+    //     {
+    //         pfnDLLMain pfnDllMain = (pfnDLLMain)(pResources->Injected_dll_base + rvaOfEntryPoint);
+    //         LOG_W(L"Calculated DllMain address: 0x%p", (void*)pfnDllMain);
+
+    //         pHeapParams->pfnDllMain = pfnDllMain;
+    //         pHeapParams->hinstDLL = (HINSTANCE)pResources->Injected_dll_base;
+    //         pHeapParams->vpAllocatedHeap = vpAllocatedHeap;
+    //         pHeapParams->pRtlFreeHeap = my_RtlFreeHeap;
+    //         pHeapParams->vpTarget_process_Heap = hTargetProcessHeap;
+
+    //         DWORD dwDllMainThreadId = 0; 
+    //         LOG_W(L"Creating new thread to execute DllMain (0x%p) via DllMainThreadRunner", (void*)pfnDllMain);
+    //         HANDLE hDllMainThread = my_CreateThread(NULL, 0, DllMainThreadRunner, pHeapParams, 0, &dwDllMainThreadId);
+    //         if (hDllMainThread)
+    //         {
+    //             LOG_W(L"DllMain thread launched Thread id-> %d Handle-> 0x%p", dwDllMainThreadId, (void*)hDllMainThread);
+    //             my_CloseHandle(hDllMainThread);
+    //         }
+    //         else
+    //         {
+    //             LOG_W(L"!!!! FAILED to create thread for DllMain. DLL will not initialize. !!!!");
+    //             my_RtlFreeHeap(hTargetProcessHeap, 0, vpAllocatedHeap);
+    //         }
+    //     }
+    //     LOG_W(L"            DllMain Call Attempted\n-----------------------------------------------------------");
+    //     #pragma endregion
+
+    //     //==========================================================================================
+        
+    //     #pragma region ZeroPEHeader
+
+    //     LOG_W(L"            ZeroPEHeader ");
+
+    //     //----------------Fill _CACHED_PROTECTIONS_FOR_REGIONS before zeroing header
+    //     IMAGE_SECTION_HEADER* pSectionHeader_injected_dll = IMAGE_FIRST_SECTION(pNtHeader_injected_dll);
+    //     WORD noOfSections_Dll = pFileHeader_injected_dll->NumberOfSections;
+            
+    //     if (noOfSections_Dll > 20)
+    //     {
+    //         LOG_W(L"  [Cache] Warning: Number of sections (%u) exceeds cache array size (20). Truncating.", noOfSections_Dll);
+    //         noOfSections_Dll = 20;
+    //     }
+
+    //     __declspec(allocate(".stub")) static CACHED_PROTECTIONS_OF_REGIONS CashedProtectionArray[20];
+
+    //     for(WORD i = 0; i < noOfSections_Dll; ++i)
+    //     {
+    //         IMAGE_SECTION_HEADER* pCurrentSection = &pSectionHeader_injected_dll[i];
+
+    //         CashedProtectionArray[i].CachedSectionRVA = pCurrentSection->VirtualAddress;
+    //         CashedProtectionArray[i].pCachedSectionMemoryBase = pResources->Injected_dll_base + CashedProtectionArray[i].CachedSectionRVA;
+    //         CashedProtectionArray[i].CachedSectionVirtualSize = pCurrentSection->Misc.VirtualSize;
+
+    //         for (int k = 0; k < IMAGE_SIZEOF_SHORT_NAME && pCurrentSection->Name[k] != '\0'; ++k) CashedProtectionArray[i].CachedcurrentSectionNameAnsi[k] = (char)pCurrentSection->Name[k];
+    //         if(CashedProtectionArray[i].CachedSectionVirtualSize != 0) CashedProtectionArray[i].Cachedcharacteristics = pCurrentSection->Characteristics;
+    //     }
+    //     IMAGE_DATA_DIRECTORY relocDirEntry = pOptionalHeader_injected_dll->DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC];
+    //     //----------------Filled _CACHED_PROTECTIONS_FOR_REGIONS
+
+    //     WORD SizeOfHeader_injected_dll = pOptionalHeader_injected_dll->SizeOfHeaders;
+
+    //     my_RtlFillMemory(pResources->Injected_dll_base, SizeOfHeader_injected_dll, 0);
+    //     LOG_W(L"Zeroed PE headers from [0x%p] for size [0x%X]", (void*)pResources->Injected_dll_base, SizeOfHeader_injected_dll);
+        
+    //     DWORD oldHeaderProtect = 0;
+    //     if (my_VirtualProtect(pResources->Injected_dll_base, SizeOfHeader_injected_dll, PAGE_NOACCESS, &oldHeaderProtect)) LOG_W(L"PE header protection changed to RW (old=0x%X)", oldHeaderProtect);
+    //     else LOG_W(L"Failed to change PE header protection to RW");
+        
+    //     LOG_W(L"            ZeroPEHeader \n-----------------------------------------------------------");
+        
+    //     #pragma endregion
+
+    //     //==========================================================================================
+        
+    //     #pragma region Memory Hardening 
+
+    //     LOG_W(L"            Memory Hardening ");
+        
+    //     for(UINT i = 0; i < noOfSections_Dll; ++i)
+    //     {
+    //         BYTE* pSectionMemoryBase = CashedProtectionArray[i].pCachedSectionMemoryBase;
+    //         SIZE_T SectionVirtualSize = CashedProtectionArray[i].CachedSectionVirtualSize;
+
+    //         if(SectionVirtualSize == 0) LOG_W(L"Size of section [%hs] is 0, skipping", CashedProtectionArray[i].CachedcurrentSectionNameAnsi);
+    //         else
+    //         {
+    //             // LOG_W(L"Changing protection for '%hs'", CashedProtectionArray[i].CachedcurrentSectionNameAnsi);
+    //             DWORD characteristics = CashedProtectionArray[i].Cachedcharacteristics;
+    //             int newProtectionFlags = 0;
+
+    //             if(relocDirEntry.VirtualAddress != 0 && CashedProtectionArray[i].CachedSectionRVA == relocDirEntry.VirtualAddress)
+    //             {
+    //                 newProtectionFlags = PAGE_NOACCESS;
+    //                 // LOG_W(L"Section '%hs' (relocation data) setting to PAGE_NOACCESS.", CashedProtectionArray[i].CachedcurrentSectionNameAnsi);
+    //             }
+    //             else
+    //             {
+    //                 if (characteristics & IMAGE_SCN_MEM_EXECUTE)
+    //                 {
+    //                     if (characteristics & IMAGE_SCN_MEM_WRITE) newProtectionFlags = PAGE_EXECUTE_READWRITE;      
+    //                     else if (characteristics & IMAGE_SCN_MEM_READ) newProtectionFlags = PAGE_EXECUTE_READ;  // .text
+    //                     else newProtectionFlags = PAGE_EXECUTE;
+    //                 }
+    //                 else if (characteristics & IMAGE_SCN_MEM_WRITE)     //Note: Data sections are often also readable, Windows loader typically maps .data/.bss as RW.
+    //                 {
+    //                     newProtectionFlags = PAGE_READWRITE;            // .data, .bss
+    //                 }
+    //                 else if(characteristics & IMAGE_SCN_MEM_READ) newProtectionFlags = PAGE_READONLY;  // .rdata
+    //                 else
+    //                 {
+    //                     newProtectionFlags = PAGE_NOACCESS; // Section with no R, W, or E flags
+    //                     LOG_W(L"Section '%hs' has no R/W/E characteristics. Setting to PAGE_NOACCESS.", CashedProtectionArray[i].CachedcurrentSectionNameAnsi);
+    //                 }
+    //             }
+
+    //             // If for some reason newProtectionFlags is still 0 (e.g., section with only IMAGE_SCN_MEM_WRITE but not READ or EXECUTE, which is odd)
+    //             // a default might be applied, but the logic above should cover most cases.
+    //             // PAGE_NOACCESS is a safe default if unsure.
+    //             if (newProtectionFlags == 0)
+    //             {
+    //                 LOG_W(L"Section '%hs' resulted in no specific protection flags, defaulting to PAGE_READONLY.", CashedProtectionArray[i].CachedcurrentSectionNameAnsi);
+    //                 newProtectionFlags = PAGE_READONLY; // A somewhat safe default
+    //             }
+
+    //             DWORD oldProtectionFlags = 0;
+    //             if(my_VirtualProtect((LPVOID)pSectionMemoryBase, SectionVirtualSize, newProtectionFlags, &oldProtectionFlags))
+    //             {
+    //                 LOG_W(L"Section '%hs' (0x%p, size 0x%X) permissions changed: Old=0x%X, New=0x%X", CashedProtectionArray[i].CachedcurrentSectionNameAnsi, (void*)pSectionMemoryBase, SectionVirtualSize, oldProtectionFlags, newProtectionFlags);
+    //             }
+    //             else LOG_W(L"!!!! FAILED to VirtualProtect section '%hs' (0x%p) to 0x%X !!!!", CashedProtectionArray[i].CachedcurrentSectionNameAnsi, (void*)pSectionMemoryBase, newProtectionFlags);
+    //         }
+    //     }
+
+    //     int newProtectionFlags = PAGE_READWRITE;
+    //     DWORD oldProtectionFlags = 0;
+    //     SIZE_T SizeOfShellcodeResources = pResources->Injected_Shellcode_base - pResources->ResourceBase;
+    //     if(my_VirtualProtect((LPVOID)pResources->ResourceBase, SizeOfShellcodeResources, newProtectionFlags, &oldProtectionFlags))
+    //     {
+    //         LOG_W(L"Shellcode Resources permission changed: Old=0x%X, New=0x%X", oldProtectionFlags, newProtectionFlags);
+    //     } else LOG_W(L"!!!! FAILED to VirtualProtect Shellcode Resources to 0x%X", newProtectionFlags);
+
+    //     LOG_W(L"            Memory Hardening \n-----------------------------------------------------------");
+
+    //     #pragma endregion
+
+    //     //==========================================================================================
+        
+    //     #pragma region Suicide
+    //     LOG_W(L"            Suicide");
+
+    //     // LARGE_INTEGER delayInterval;
+    //     // delayInterval.QuadPart = -10000 * 10000; // 1000 ms = 1 second, negative for relative time
+    //     // my_NtDelayExecution(1, &delayInterval);
+
+    //     LOG_W(L"Preparing for self-deletion and exit via assembly suicide stub...");
+
+    //     Suicide(pResources->ResourceBase, my_NtFreeVirtualMemory, my_RtlExitUserThread, my_NtProtectVirtualMemory);
+
+    //     LOG_W(L"!!!! ERROR: Returned from Suicide Stub !!!!");
+
+    //     LOG_W(L"            Suicide\n-----------------------------------------------------------");
+    //     #pragma endregion
+
+    //     //==========================================================================================
+        
+    //     LOG_W(L"[END_OF_SHELLCODE]");
+    //     // __debugbreak();
+    // }
+    #pragma endregion
+
+
     __declspec(noinline) void __stdcall shellcode(LPVOID lpParameter)
     {
         #pragma region Shellcode_setup
@@ -1077,15 +1699,6 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
             HMODULE hKERNELBASE;
             HMODULE hUsr32;
         }sLibs;
-
-        typedef struct _CACHED_PROTECTIONS_OF_REGIONS
-        {
-            DWORD CachedSectionRVA;
-            DWORD Cachedcharacteristics;
-            BYTE* pCachedSectionMemoryBase;
-            SIZE_T CachedSectionVirtualSize;
-            char CachedcurrentSectionNameAnsi[IMAGE_SIZEOF_SHORT_NAME + 1];
-        } CACHED_PROTECTIONS_OF_REGIONS, *PCACHED_PROTECTIONS_OF_REGIONS;
 
         typedef struct _MY_PEB_LDR_DATA
         {
@@ -1117,7 +1730,7 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
         
         MY_PEB_LDR_DATA* pLdr = (MY_PEB_LDR_DATA*)pPEB->Ldr;
         auto head = &pLdr->InLoadOrderModuleList;
-        auto current = head->Flink;    // first entry is the EXE itself
+        auto current = head->Flink;
         
         //walk load‑order
         while(current != head)
@@ -1155,35 +1768,14 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
         my_LoadLibraryA = (pfnLoadLibraryA)ShellcodeFindExportAddress(sLibs.hKERNELBASE, cLoadLibraryAFunction, my_LoadLibraryA);
         if(my_LoadLibraryA == NULL) __debugbreak();
 
-        my_VirtualProtect = (pfnVirtualProtect)ShellcodeFindExportAddress(sLibs.hKERNELBASE, cVirtualProtectFunction, my_LoadLibraryA);
-        if(my_VirtualProtect == NULL) __debugbreak();
-
-        my_CreateThread = (pfnCreateThread)ShellcodeFindExportAddress(sLibs.hKERNELBASE, cCreateThreadFunction, my_LoadLibraryA);
-        if(my_CreateThread == NULL) __debugbreak();
-
         my_CloseHandle = (pfnCloseHandle)ShellcodeFindExportAddress(sLibs.hKERNELBASE, cCloseHandleFunction, my_LoadLibraryA);
         if(my_CloseHandle == NULL) __debugbreak();
         
-        my_RtlFillMemory = (pfnRtlFillMemory)ShellcodeFindExportAddress(sLibs.hHookedNtdll, cRtlFillMemoryFunction, my_LoadLibraryA);
-        if(my_RtlFillMemory == NULL) __debugbreak();
-
-        my_NtFreeVirtualMemory = (pfnNtFreeVirtualMemory)ShellcodeFindExportAddress(sLibs.hHookedNtdll, cNtFreeVirtualMemoryFunction, my_LoadLibraryA);
-        if(my_NtFreeVirtualMemory == NULL) __debugbreak();
-
-        my_RtlExitUserThread = (pfnRtlExitUserThread)ShellcodeFindExportAddress(sLibs.hHookedNtdll, cRtlExitUserThreadFunction, my_LoadLibraryA);
-        if(my_RtlExitUserThread == NULL) __debugbreak();
-
-        my_NtProtectVirtualMemory = (pfnNtProtectVirtualMemory)ShellcodeFindExportAddress(sLibs.hHookedNtdll, cNtProtectVirtualMemoryFunction, my_LoadLibraryA);
-        if(my_NtProtectVirtualMemory == NULL) __debugbreak();
-        
         my_NtDelayExecution = (pfnNtDelayExecution)ShellcodeFindExportAddress(sLibs.hHookedNtdll, cNtDelayExecutionFunction, my_LoadLibraryA);
         if(my_NtDelayExecution == NULL) __debugbreak();
-        
-        my_RtlAllocateHeap = (pfnRtlAllocateHeap)ShellcodeFindExportAddress(sLibs.hHookedNtdll, cRtlAllocateHeapFunction, my_LoadLibraryA);
-        if(my_RtlAllocateHeap == NULL) __debugbreak();
-        
-        my_RtlFreeHeap = (pfnRtlFreeHeap)ShellcodeFindExportAddress(sLibs.hHookedNtdll, cRtlFreeHeapFunction, my_LoadLibraryA);
-        if(my_RtlFreeHeap == NULL) __debugbreak();
+
+        my_CreateFileW = (pfnCreateFileW)ShellcodeFindExportAddress(sLibs.hKERNELBASE, cCreateFileWFunction, my_LoadLibraryA);
+        if(my_CreateFileW == NULL) __debugbreak();
         
         ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -1194,18 +1786,18 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
         __declspec(allocate(".stub")) static const WCHAR s2[] = L"Hello from injected shellcode!";
         ShellcodeSprintfW(g_shellcodeLogBuffer, sizeof(g_shellcodeLogBuffer)/sizeof(WCHAR), s2);
         
-        LOG_W(L"//////////////////////////////////////////////////////////");
-        LOG_W(L"Injected_dll_base -> 0x%p", pResources->Injected_dll_base);
-        LOG_W(L"Resource_base ->  0x%p\n", pResources->ResourceBase);
-        LOG_W(L"Shellcode_base ->  0x%p", pResources->Injected_Shellcode_base);
-        LOG_W(L"-----------------------------------------------------------");
+        LOG_W(L"[SHELLCODE] //////////////////////////////////////////////////////////\n");
+        LOG_W(L"[SHELLCODE] Injected_dll_base -> 0x%p\n", pResources->Injected_dll_base);
+        LOG_W(L"[SHELLCODE] Resource_base ->  0x%p\n", pResources->ResourceBase);
+        LOG_W(L"[SHELLCODE] Shellcode_base ->  0x%p\n", pResources->Injected_Shellcode_base);
+        LOG_W(L"[SHELLCODE] -----------------------------------------------------------\n");
 
         IMAGE_DOS_HEADER* pDosHeader_injected_dll = (IMAGE_DOS_HEADER*) pResources->Injected_dll_base;
         if(pDosHeader_injected_dll->e_magic != 0x5A4D)
         {
-            LOG_W(L"[!!!!] Invalid DOSHeader signature");
+            LOG_W(L"[SHELLCODE] [!!!!] Invalid DOSHeader signature\n");
             return;
-        }else LOG_W(L"DOSHeader signature-> 0x%hX [OK]", pDosHeader_injected_dll->e_magic);
+        }else LOG_W(L"[SHELLCODE] DOSHeader signature-> 0x%hX [OK]\n", pDosHeader_injected_dll->e_magic);
         
         
         DWORD peOffset_injected_dll = pDosHeader_injected_dll->e_lfanew;
@@ -1213,469 +1805,38 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
         IMAGE_NT_HEADERS* pNtHeader_injected_dll = (IMAGE_NT_HEADERS*)(pResources->Injected_dll_base + peOffset_injected_dll);
         if(pNtHeader_injected_dll->Signature != IMAGE_NT_SIGNATURE)
         {
-            LOG_W(L"[!!!!] Invalid NTHeader signature");
+            LOG_W(L"[SHELLCODE] [!!!!] Invalid NTHeader signature\n");
             return;
-        }else LOG_W(L"NTHeader signature-> 0x%X [OK]", pNtHeader_injected_dll->Signature);
+        }else LOG_W(L"[SHELLCODE] NTHeader signature-> 0x%X [OK]\n", pNtHeader_injected_dll->Signature);
 
         IMAGE_OPTIONAL_HEADER* pOptionalHeader_injected_dll = &pNtHeader_injected_dll->OptionalHeader;
         if(pOptionalHeader_injected_dll->Magic != IMAGE_NT_OPTIONAL_HDR_MAGIC)
         {
-            LOG_W(L"[!!!!] Invalid OptionalHeader Magic");
+            LOG_W(L"[SHELLCODE] [!!!!] Invalid OptionalHeader Magic\n");
             return;
-        }else LOG_W(L"OptionalHeader Magic-> 0x%X [OK]", pOptionalHeader_injected_dll->Magic);
+        }else LOG_W(L"[SHELLCODE] OptionalHeader Magic-> 0x%X [OK]\n", pOptionalHeader_injected_dll->Magic);
 
         IMAGE_FILE_HEADER* pFileHeader_injected_dll = (IMAGE_FILE_HEADER*)(&pNtHeader_injected_dll->FileHeader);
         if(pFileHeader_injected_dll->Machine != IMAGE_FILE_MACHINE_AMD64)
         {
-            LOG_W(L"[!!!!] Invalid FileHeader Machine type");
+            LOG_W(L"[SHELLCODE] [!!!!] Invalid FileHeader Machine type\n");
             return;
-        }else LOG_W(L"FileHeader Machine-> 0x%X [OK]", pFileHeader_injected_dll->Machine);
-        LOG_W(L"-----------------------------------------------------------");
+        }else LOG_W(L"[SHELLCODE] FileHeader Machine-> 0x%X [OK]\n", pFileHeader_injected_dll->Machine);
+        LOG_W(L"[SHELLCODE] -----------------------------------------------------------\n");
         
         #pragma endregion
 
         //==========================================================================================
 
-        #pragma region Relocations
+        #pragma region Driver_Communication
 
-        size_t delta = (uintptr_t)pResources->Injected_dll_base - pOptionalHeader_injected_dll->ImageBase;
-        if(delta)
-        {
-            LOG_W(L"            Relocation\nDelta calculated: 0x%p", (void*)delta);
+        __debugbreak();
 
-            IMAGE_DATA_DIRECTORY* dataDir = pOptionalHeader_injected_dll->DataDirectory;
-            IMAGE_DATA_DIRECTORY relocDirEntry = dataDir[IMAGE_DIRECTORY_ENTRY_BASERELOC];
-
-            if(relocDirEntry.Size > sizeof(IMAGE_BASE_RELOCATION) && relocDirEntry.VirtualAddress != 0)
-            {
-                BYTE* pCurrentRelocBlockAddress = pResources->Injected_dll_base + relocDirEntry.VirtualAddress;
-                BYTE* pEndOfRelocData = pCurrentRelocBlockAddress + relocDirEntry.Size;
-                UINT noOfAbsoluteRelocs = 0, noOfHighlowRelocs = 0, noOfDir64Relocs = 0; 
-
-                while(pCurrentRelocBlockAddress < pEndOfRelocData)
-                {
-                    IMAGE_BASE_RELOCATION* pBlock = (IMAGE_BASE_RELOCATION*)pCurrentRelocBlockAddress;
-
-                    if(pBlock->SizeOfBlock == 0) { LOG_W(L"Encountered a relocation block with SizeOfBlock = 0. Ending relocation processing."); break;}
-                    
-                    DWORD BaseRVAForBlock = pBlock->VirtualAddress;
-                    size_t numberOfEntriesInBlock = (pBlock->SizeOfBlock - sizeof(IMAGE_BASE_RELOCATION)) / 2;                // 2 -> sizeof(word)
-                    WORD* pListEntry = (WORD*)(pBlock + 1);
-
-                    for(UINT i = 0; i < numberOfEntriesInBlock; ++i)
-                    {
-                        WORD currentEntry = pListEntry[i];
-                        int relocationType = currentEntry >> 12;
-                        int offsetInPage = currentEntry & 0x0FFF;
-                        
-                        BYTE* pAddressToPatch = pResources->Injected_dll_base + BaseRVAForBlock + offsetInPage;
-
-                        switch(relocationType)
-                        {
-                            case IMAGE_REL_BASED_ABSOLUTE:
-                            {
-                                //Do nothing. This is a padding/sentinel entry
-                                noOfAbsoluteRelocs += 1;
-                                break;
-                            }
-
-                            case IMAGE_REL_BASED_HIGHLOW:
-                            {
-                                DWORD* patchValuePointer = (DWORD*)pAddressToPatch;
-                                *patchValuePointer = *patchValuePointer + (DWORD)delta;
-                                
-                                // LOG_W(L"Applied HIGHLOW relocation at [0x%p] by adding [0x%X]", pAddressToPatch, delta);
-                                noOfHighlowRelocs +=1;
-                                break;
-                            }           
-
-                            case IMAGE_REL_BASED_DIR64:
-                            {
-                                DWORD_PTR* patchValuePointer = (DWORD_PTR*)pAddressToPatch;
-                                *patchValuePointer = *patchValuePointer + delta;
-
-                                // LOG_W(L"Applied IMAGE_REL_BASED_DIR64 relocation at [0x%p] by adding [0x%X]", pAddressToPatch, delta);
-                                noOfDir64Relocs +=1;
-                                break;
-                            }
-
-                            default:
-                            {
-                                LOG_W(L"Unknown or unhandled relocation type: 0x%hX at 0x%p", (WORD)relocationType, pAddressToPatch);
-                                break;
-                            }              
-                        }
-                    }
-                    pCurrentRelocBlockAddress = pCurrentRelocBlockAddress + pBlock->SizeOfBlock;
-                }
-                LOG_W(L"Absolute relocations: %d\nHighLow relocations: %d\nDir64 relocations: %d", noOfAbsoluteRelocs, noOfHighlowRelocs, noOfDir64Relocs);
-            }
-            else LOG_W(L"No relocation data found or .reloc section is empty");
-
-            LOG_W(L"            Relocations Done\n-----------------------------------------------------------");
-
-        }
-        else LOG_W(L"No relocations required\n-----------------------------------------------------------");
-        #pragma endregion
-
-        //==========================================================================================
-
-        #pragma region TLSCallbacks
-
-        LOG_W(L"            TLS_Callbacks");
-
-        IMAGE_DATA_DIRECTORY* pDataDirectoryArray = pNtHeader_injected_dll->OptionalHeader.DataDirectory;
-        IMAGE_DATA_DIRECTORY tlsDirEntryStruct  = pDataDirectoryArray[IMAGE_DIRECTORY_ENTRY_TLS];
-
-        if(tlsDirEntryStruct.Size < sizeof(IMAGE_TLS_DIRECTORY) || tlsDirEntryStruct.VirtualAddress == 0)
-        {
-            LOG_W(L"No TLS Directory found, or its size is invalid/empty. Skipping");
-        }
-        else
-        {
-            LOG_W(L"TLS Directory Entry: VA=0x%X, Size=0x%X", tlsDirEntryStruct.VirtualAddress, tlsDirEntryStruct.Size);
-
-            BYTE* pMemoryAddressOfTlsDirectoryStruct = pResources->Injected_dll_base + tlsDirEntryStruct.VirtualAddress;
-            IMAGE_TLS_DIRECTORY* pTlsStruct = (IMAGE_TLS_DIRECTORY*)pMemoryAddressOfTlsDirectoryStruct;
-            LOG_W(L"Actual IMAGE_TLS_DIRECTORY structure is at 0x%p", pMemoryAddressOfTlsDirectoryStruct);
-
-            uintptr_t vaOfCallbackArrayPointer = pTlsStruct->AddressOfCallBacks;
-            if(vaOfCallbackArrayPointer == NULL) LOG_W(L"TLS Directory.AddressOfCallBacks is NULL, no callback array defined");
-            else
-            {   
-                //PIMAGE_TLS_CALLBACK* is a pointer to a pointer to a callback function
-                PIMAGE_TLS_CALLBACK* pActualMemoryAddressOfCallbackArray;
-
-                if(delta != 0)
-                {
-                    pActualMemoryAddressOfCallbackArray = (PIMAGE_TLS_CALLBACK*)vaOfCallbackArrayPointer;
-                    LOG_W(L"Delta non-zero. Assuming AddressOfCallBacks field (0x%p) absolute ptr to the callback array", (void*)vaOfCallbackArrayPointer);
-                }
-                else
-                {
-                    uintptr_t rvaOfCallbackArray = vaOfCallbackArrayPointer - pOptionalHeader_injected_dll->ImageBase;
-                    pActualMemoryAddressOfCallbackArray = (PIMAGE_TLS_CALLBACK*)(pResources->Injected_dll_base + rvaOfCallbackArray);
-
-                    LOG_W(L"Delta is zero. AddressOfCallBacks field (VA 0x%p) rebased to callback array ptr 0x%p", (void*)vaOfCallbackArrayPointer, (void*)pActualMemoryAddressOfCallbackArray);
-                }
-
-                PIMAGE_TLS_CALLBACK* currentArrayElementPtr = pActualMemoryAddressOfCallbackArray;
-                LOG_W(L"VA of callback array is 0x%p. Actual memory address of this array is 0x%p", vaOfCallbackArrayPointer, pActualMemoryAddressOfCallbackArray);
-
-                UINT NoOfCallBacks = 0;
-                while(*currentArrayElementPtr != NULL)
-                {
-                    uintptr_t vaOfIndividualCallback = (uintptr_t)*currentArrayElementPtr;
-                    uintptr_t rvaOfIndividualCallback = vaOfIndividualCallback - pOptionalHeader_injected_dll->ImageBase;
-
-                    PIMAGE_TLS_CALLBACK actualFunctionAddressToCall = (PIMAGE_TLS_CALLBACK)(pResources->Injected_dll_base + rvaOfIndividualCallback);
-                    LOG_W(L"Found TLS callback entry. Original VA of function: 0x%p. Actual function address: 0x%p. Invoking...", (void*)vaOfIndividualCallback, actualFunctionAddressToCall);
-
-                    //Call it
-                    actualFunctionAddressToCall((PVOID)pResources->Injected_dll_base, DLL_PROCESS_ATTACH, NULL);
-                    ++currentArrayElementPtr;
-                    ++NoOfCallBacks;
-                }
-                LOG_W(L"Done TLS callbacks. Total callbacks: %d", NoOfCallBacks);
-            }            
-        }
-
-        LOG_W(L"            TLS_Callbacks\n-----------------------------------------------------------");
-        #pragma endregion
-
-        //==========================================================================================
-
-        #pragma region Import Resolution
-
-        IMAGE_DATA_DIRECTORY importDirEntry = pOptionalHeader_injected_dll->DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
-        if(importDirEntry.VirtualAddress == 0 || importDirEntry.Size < sizeof(IMAGE_DATA_DIRECTORY)) LOG_W(L"No Import Directory found. No imports to resolve");
-        else
-        {
-            BYTE* pCurrentImportDescriptorAddress = pResources->Injected_dll_base + importDirEntry.VirtualAddress;
-            IMAGE_IMPORT_DESCRIPTOR* pDesc = (IMAGE_IMPORT_DESCRIPTOR*)pCurrentImportDescriptorAddress;
-
-            while(pDesc->Name != 0)
-            {
-
-                DWORD rvaOfDllName = pDesc->Name;
-                char* dllNameString = (char*)(pResources->Injected_dll_base + rvaOfDllName);
-
-                LOG_W(L"\n------Processing imports for DLL: [%hs]------", dllNameString);
-                
-                HANDLE hDependentdll = my_LoadLibraryA(dllNameString);
-                if(hDependentdll == NULL)
-                {
-                    LOG_W(L"FAILED to load dependent DLL: [%hs]", dllNameString);
-                    ++pDesc;
-                    continue;
-                }
-
-                IMAGE_THUNK_DATA* pImportNameTable = NULL;
-                IMAGE_THUNK_DATA* pImportAddressTable = NULL;
-
-                //The `OriginalFirstThunk` (OFT) contains the information (name or ordinal) used to look up the function
-                //The `FirstThunk` (IAT) is the table that gets *patched* with the actual resolved function addresses.
-                DWORD rvaOFT = pDesc->OriginalFirstThunk;
-                DWORD rvaIAT = pDesc->FirstThunk;
-
-                if(rvaOFT != 0) pImportNameTable = (IMAGE_THUNK_DATA*)(pResources->Injected_dll_base + rvaOFT);
-                else pImportNameTable = (IMAGE_THUNK_DATA*)(pResources->Injected_dll_base + rvaIAT);
-            
-                pImportAddressTable = (IMAGE_THUNK_DATA*)(pResources->Injected_dll_base + rvaIAT);
-                LOG_W(L"OFT RVA: 0x%X, IAT RVA: 0x%X. pINT at 0x%p, pIAT at 0x%p", rvaOFT, rvaIAT, pImportNameTable, pImportAddressTable);
-
-                UINT SuccessImportResolution = 0, FailImportResolution = 0;
-                while(pImportAddressTable->u1.AddressOfData != 0)
-                {
-                    FARPROC resolvedFunctionAddress = NULL;
-                    ULONGLONG currentThunkValue = pImportNameTable->u1.Function;
-
-                    if(IMAGE_SNAP_BY_ORDINAL(currentThunkValue))
-                    {
-                        WORD ordinalToImport = (WORD)IMAGE_ORDINAL(currentThunkValue);
-                        //LOG_W(L"  Attempting to import by Ordinal: %d", ordinalToImport);
-
-                        resolvedFunctionAddress = (FARPROC)(ShellcodeFindExportAddress(reinterpret_cast<HMODULE>(hDependentdll), (LPCSTR)ordinalToImport, my_LoadLibraryA));
-
-                        if (!resolvedFunctionAddress)
-                        {
-                            LOG_W(L"FAILED to resolve Ordinal %d from %hs", ordinalToImport, dllNameString);
-                            ++FailImportResolution;
-                        }
-                        else
-                        {
-                            LOG_W(L"Resolved Ordinal %d to 0x%p", ordinalToImport, (void*)resolvedFunctionAddress);
-                            ++SuccessImportResolution;
-                        }
-                    }
-                    else    // Importing by Name
-                    {
-
-                        // u1.AddressOfData contains RVA to IMAGE_IMPORT_BY_NAME structure
-                        DWORD rvaImportByName = (DWORD)pImportAddressTable->u1.AddressOfData;
-                        IMAGE_IMPORT_BY_NAME* pImportByName = (IMAGE_IMPORT_BY_NAME*)(pResources->Injected_dll_base + rvaImportByName);
-
-                        char* functionName = pImportByName->Name;
-                        
-                        //LOG_W(L"Attempting to import by Name: '%hs'", functionName);
-                        resolvedFunctionAddress = (FARPROC)(ShellcodeFindExportAddress(reinterpret_cast<HMODULE>(hDependentdll), functionName, my_LoadLibraryA));
-
-                        if (!resolvedFunctionAddress)
-                        {
-                            LOG_W(L"[[FAILED]] to resolve Name '%hs' from %hs", functionName, dllNameString);
-                            ++FailImportResolution;
-                            
-                        }
-                        else
-                        {
-                            LOG_W(L"Resolved Name '%hs' to 0x%p", functionName, (void*)resolvedFunctionAddress);
-                            ++SuccessImportResolution;
-                        }
-                    }
-
-                    pImportAddressTable->u1.Function = (ULONGLONG)resolvedFunctionAddress;
-                    
-                    ++pImportNameTable;
-                    ++pImportAddressTable;
-                }
-                
-                LOG_W(L"DLL-> [%hs] Success[%d] Fail[%d]------\n", dllNameString, SuccessImportResolution, FailImportResolution);
-
-                ++pDesc;
-            }
-            LOG_W(L"\nAll import descriptors processed");
-        }
-        LOG_W(L"            Import Resolution Finished\n-----------------------------------------------------------");  
-        #pragma endregion
-
-        //==========================================================================================
-
-        #pragma region Call DLLMain
-
-        LOG_W(L"            Call DllMain");
-
-        HANDLE hTargetProcessHeap = nullptr;
-        BYTE* pPEB_bytes = (BYTE*)pPEB;
-
-        hTargetProcessHeap = (HANDLE)(*(PDWORD_PTR)(pPEB_bytes + 0x30));
-        LOG_W(L"Located the Target Process heap at -> 0x%p", (void*)hTargetProcessHeap);
-
-        void* vpAllocatedHeap = my_RtlAllocateHeap(hTargetProcessHeap, HEAP_ZERO_MEMORY, sizeof(DLLMAIN_THREAD_PARAMS));
-        if(!vpAllocatedHeap) {LOG_W(L"[!!!!] Could not allocate the heap [!!!!]"); return;}
-
-        PDLLMAIN_THREAD_PARAMS pHeapParams = reinterpret_cast<PDLLMAIN_THREAD_PARAMS>(vpAllocatedHeap);
-
-
-        DWORD rvaOfEntryPoint = pOptionalHeader_injected_dll->AddressOfEntryPoint;
-        if (rvaOfEntryPoint == 0) LOG_W(L"DLL has no entry point. Skipping DllMain call.");
-        else
-        {
-            pfnDLLMain pfnDllMain = (pfnDLLMain)(pResources->Injected_dll_base + rvaOfEntryPoint);
-            LOG_W(L"Calculated DllMain address: 0x%p", (void*)pfnDllMain);
-
-            pHeapParams->pfnDllMain = pfnDllMain;
-            pHeapParams->hinstDLL = (HINSTANCE)pResources->Injected_dll_base;
-            pHeapParams->vpAllocatedHeap = vpAllocatedHeap;
-            pHeapParams->pRtlFreeHeap = my_RtlFreeHeap;
-            pHeapParams->vpTarget_process_Heap = hTargetProcessHeap;
-
-            DWORD dwDllMainThreadId = 0; 
-            LOG_W(L"Creating new thread to execute DllMain (0x%p) via DllMainThreadRunner", (void*)pfnDllMain);
-            HANDLE hDllMainThread = my_CreateThread(NULL, 0, DllMainThreadRunner, pHeapParams, 0, &dwDllMainThreadId);
-            if (hDllMainThread)
-            {
-                LOG_W(L"DllMain thread launched Thread id-> %d Handle-> 0x%p", dwDllMainThreadId, (void*)hDllMainThread);
-                my_CloseHandle(hDllMainThread);
-            }
-            else
-            {
-                LOG_W(L"!!!! FAILED to create thread for DllMain. DLL will not initialize. !!!!");
-                my_RtlFreeHeap(hTargetProcessHeap, 0, vpAllocatedHeap);
-            }
-        }
-        LOG_W(L"            DllMain Call Attempted\n-----------------------------------------------------------");
-        #pragma endregion
-
-        //==========================================================================================
-        
-        #pragma region ZeroPEHeader
-
-        LOG_W(L"            ZeroPEHeader ");
-
-        //----------------Fill _CACHED_PROTECTIONS_FOR_REGIONS before zeroing header
-        IMAGE_SECTION_HEADER* pSectionHeader_injected_dll = IMAGE_FIRST_SECTION(pNtHeader_injected_dll);
-        WORD noOfSections_Dll = pFileHeader_injected_dll->NumberOfSections;
-            
-        if (noOfSections_Dll > 20)
-        {
-            LOG_W(L"  [Cache] Warning: Number of sections (%u) exceeds cache array size (20). Truncating.", noOfSections_Dll);
-            noOfSections_Dll = 20;
-        }
-
-        __declspec(allocate(".stub")) static CACHED_PROTECTIONS_OF_REGIONS CashedProtectionArray[20];
-
-        for(WORD i = 0; i < noOfSections_Dll; ++i)
-        {
-            IMAGE_SECTION_HEADER* pCurrentSection = &pSectionHeader_injected_dll[i];
-
-            CashedProtectionArray[i].CachedSectionRVA = pCurrentSection->VirtualAddress;
-            CashedProtectionArray[i].pCachedSectionMemoryBase = pResources->Injected_dll_base + CashedProtectionArray[i].CachedSectionRVA;
-            CashedProtectionArray[i].CachedSectionVirtualSize = pCurrentSection->Misc.VirtualSize;
-
-            for (int k = 0; k < IMAGE_SIZEOF_SHORT_NAME && pCurrentSection->Name[k] != '\0'; ++k) CashedProtectionArray[i].CachedcurrentSectionNameAnsi[k] = (char)pCurrentSection->Name[k];
-            if(CashedProtectionArray[i].CachedSectionVirtualSize != 0) CashedProtectionArray[i].Cachedcharacteristics = pCurrentSection->Characteristics;
-        }
-        IMAGE_DATA_DIRECTORY relocDirEntry = pOptionalHeader_injected_dll->DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC];
-        //----------------Filled _CACHED_PROTECTIONS_FOR_REGIONS
-
-        WORD SizeOfHeader_injected_dll = pOptionalHeader_injected_dll->SizeOfHeaders;
-
-        my_RtlFillMemory(pResources->Injected_dll_base, SizeOfHeader_injected_dll, 0);
-        LOG_W(L"Zeroed PE headers from [0x%p] for size [0x%X]", (void*)pResources->Injected_dll_base, SizeOfHeader_injected_dll);
-        
-        DWORD oldHeaderProtect = 0;
-        if (my_VirtualProtect(pResources->Injected_dll_base, SizeOfHeader_injected_dll, PAGE_NOACCESS, &oldHeaderProtect)) LOG_W(L"PE header protection changed to RW (old=0x%X)", oldHeaderProtect);
-        else LOG_W(L"Failed to change PE header protection to RW");
-        
-        LOG_W(L"            ZeroPEHeader \n-----------------------------------------------------------");
-        
-        #pragma endregion
-
-        //==========================================================================================
-        
-        #pragma region Memory Hardening 
-
-        LOG_W(L"            Memory Hardening ");
-        
-        for(UINT i = 0; i < noOfSections_Dll; ++i)
-        {
-            BYTE* pSectionMemoryBase = CashedProtectionArray[i].pCachedSectionMemoryBase;
-            SIZE_T SectionVirtualSize = CashedProtectionArray[i].CachedSectionVirtualSize;
-
-            if(SectionVirtualSize == 0) LOG_W(L"Size of section [%hs] is 0, skipping", CashedProtectionArray[i].CachedcurrentSectionNameAnsi);
-            else
-            {
-                // LOG_W(L"Changing protection for '%hs'", CashedProtectionArray[i].CachedcurrentSectionNameAnsi);
-                DWORD characteristics = CashedProtectionArray[i].Cachedcharacteristics;
-                int newProtectionFlags = 0;
-
-                if(relocDirEntry.VirtualAddress != 0 && CashedProtectionArray[i].CachedSectionRVA == relocDirEntry.VirtualAddress)
-                {
-                    newProtectionFlags = PAGE_NOACCESS;
-                    // LOG_W(L"Section '%hs' (relocation data) setting to PAGE_NOACCESS.", CashedProtectionArray[i].CachedcurrentSectionNameAnsi);
-                }
-                else
-                {
-                    if (characteristics & IMAGE_SCN_MEM_EXECUTE)
-                    {
-                        if (characteristics & IMAGE_SCN_MEM_WRITE) newProtectionFlags = PAGE_EXECUTE_READWRITE;      
-                        else if (characteristics & IMAGE_SCN_MEM_READ) newProtectionFlags = PAGE_EXECUTE_READ;  // .text
-                        else newProtectionFlags = PAGE_EXECUTE;
-                    }
-                    else if (characteristics & IMAGE_SCN_MEM_WRITE)     //Note: Data sections are often also readable, Windows loader typically maps .data/.bss as RW.
-                    {
-                        newProtectionFlags = PAGE_READWRITE;            // .data, .bss
-                    }
-                    else if(characteristics & IMAGE_SCN_MEM_READ) newProtectionFlags = PAGE_READONLY;  // .rdata
-                    else
-                    {
-                        newProtectionFlags = PAGE_NOACCESS; // Section with no R, W, or E flags
-                        LOG_W(L"Section '%hs' has no R/W/E characteristics. Setting to PAGE_NOACCESS.", CashedProtectionArray[i].CachedcurrentSectionNameAnsi);
-                    }
-                }
-
-                // If for some reason newProtectionFlags is still 0 (e.g., section with only IMAGE_SCN_MEM_WRITE but not READ or EXECUTE, which is odd)
-                // a default might be applied, but the logic above should cover most cases.
-                // PAGE_NOACCESS is a safe default if unsure.
-                if (newProtectionFlags == 0)
-                {
-                    LOG_W(L"Section '%hs' resulted in no specific protection flags, defaulting to PAGE_READONLY.", CashedProtectionArray[i].CachedcurrentSectionNameAnsi);
-                    newProtectionFlags = PAGE_READONLY; // A somewhat safe default
-                }
-
-                DWORD oldProtectionFlags = 0;
-                if(my_VirtualProtect((LPVOID)pSectionMemoryBase, SectionVirtualSize, newProtectionFlags, &oldProtectionFlags))
-                {
-                    LOG_W(L"Section '%hs' (0x%p, size 0x%X) permissions changed: Old=0x%X, New=0x%X", CashedProtectionArray[i].CachedcurrentSectionNameAnsi, (void*)pSectionMemoryBase, SectionVirtualSize, oldProtectionFlags, newProtectionFlags);
-                }
-                else LOG_W(L"!!!! FAILED to VirtualProtect section '%hs' (0x%p) to 0x%X !!!!", CashedProtectionArray[i].CachedcurrentSectionNameAnsi, (void*)pSectionMemoryBase, newProtectionFlags);
-            }
-        }
-
-        int newProtectionFlags = PAGE_READWRITE;
-        DWORD oldProtectionFlags = 0;
-        SIZE_T SizeOfShellcodeResources = pResources->Injected_Shellcode_base - pResources->ResourceBase;
-        if(my_VirtualProtect((LPVOID)pResources->ResourceBase, SizeOfShellcodeResources, newProtectionFlags, &oldProtectionFlags))
-        {
-            LOG_W(L"Shellcode Resources permission changed: Old=0x%X, New=0x%X", oldProtectionFlags, newProtectionFlags);
-        } else LOG_W(L"!!!! FAILED to VirtualProtect Shellcode Resources to 0x%X", newProtectionFlags);
-
-        LOG_W(L"            Memory Hardening \n-----------------------------------------------------------");
+        HANDLE hDevice = my_CreateFileW(L"\\\\.\\baaaa_bae", GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+        if(hDevice == INVALID_HANDLE_VALUE) { LOG_W(L"[SHELLCODE] [!!!!] Failed to open device\n");  return; }
+        else LOG_W(L"[SHELLCODE] Successfully opened device\n");
 
         #pragma endregion
-
-        //==========================================================================================
-        
-        #pragma region Suicide
-        LOG_W(L"            Suicide");
-
-        // LARGE_INTEGER delayInterval;
-        // delayInterval.QuadPart = -10000 * 10000; // 1000 ms = 1 second, negative for relative time
-        // my_NtDelayExecution(1, &delayInterval);
-
-        LOG_W(L"Preparing for self-deletion and exit via assembly suicide stub...");
-
-        Suicide(pResources->ResourceBase, my_NtFreeVirtualMemory, my_RtlExitUserThread, my_NtProtectVirtualMemory);
-
-        LOG_W(L"!!!! ERROR: Returned from Suicide Stub !!!!");
-
-        LOG_W(L"            Suicide\n-----------------------------------------------------------");
-        #pragma endregion
-
-        //==========================================================================================
-        
-        LOG_W(L"[END_OF_SHELLCODE]");
-        // __debugbreak();
     }
 
 #pragma code_seg(pop)
