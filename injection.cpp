@@ -1830,10 +1830,12 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
 
         #pragma region Driver_Communication
 
-        __debugbreak();
+        // __debugbreak();
 
-        HANDLE hDevice = my_CreateFileW(L"\\\\.\\baaaa_bae", GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
-        if(hDevice == INVALID_HANDLE_VALUE) { LOG_W(L"[SHELLCODE] [!!!!] Failed to open device\n");  return; }
+        __declspec(allocate(".stub")) static const WCHAR s3[] = L"\\\\.\\baaaa_bae";
+
+        HANDLE hDevice = my_CreateFileW(s3, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+        if(hDevice == INVALID_HANDLE_VALUE) { LOG_W(L"[SHELLCODE] [!!!!] Failed to open device -> INVALID_HANDLE_VALUE\n");  return; }
         else LOG_W(L"[SHELLCODE] Successfully opened device\n");
 
         #pragma endregion

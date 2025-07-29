@@ -42,3 +42,6 @@ made the injected peHeader PAGE_NOACCESS
 =========================================================
 v3.0.0
 Driver update
+=========================================================
+v3.1.0
+Fixed the communication
