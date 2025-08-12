@@ -142,7 +142,7 @@ NTSTATUS SanityCheck()
     return true;
 }
 
-NTSTATUS ManualMap(HANDLE hproc, std::vector <unsigned char> *downloaded_dll)
+NTSTATUS ManualMap(HANDLE hproc, DWORD PID, std::vector <unsigned char> *downloaded_dll)
 {
     norm("\n===========================================ManualMap===========================================");
 
@@ -371,7 +371,7 @@ NTSTATUS ManualMap(HANDLE hproc, std::vector <unsigned char> *downloaded_dll)
         sResources_for_shellcode.Injected_dll_base = pTargetBase;
         sResources_for_shellcode.Injected_Shellcode_base = pShellcodeTargetBase;
         sResources_for_shellcode.ResourceBase = pShellcodeResourceBase;
-        sResources_for_shellcode.TargetPid = hproc;
+        sResources_for_shellcode.TargetPid = (HANDLE)(ULONG_PTR)PID;
     //--------------------------------------------------fill resources data before this------------------
 
     if(!WriteProcessMemory(hproc, pShellcodeResourceBase, &sResources_for_shellcode, sizeof(sResources_for_shellcode), nullptr))

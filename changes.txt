@@ -48,3 +48,6 @@ Fixed the communication
 =========================================================
 v3.2.0
 Can send Structure from user mode to kernel
+=========================================================
+v3.2.1
+Found Vad root
