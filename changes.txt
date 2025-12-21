@@ -1,0 +1,53 @@
+v1.0.0
+It works.. needs working on stealth and cleanup
+=========================================================
+v.1.1.2
+Added structure to hold the cached protection data
+=========================================================
+v.1.2.0
+Zeroed the PEHeader
+=========================================================
+v2.0.0
+Now shellcode is able to run assembly in target process
+=========================================================
+v2.0.1
+Resolved RtlExitUserThread and NtFreeVirtualMemory
+=========================================================
+v2.0.2
+Added Suicide stub
+=========================================================
+v2.0.3
+Suicide stub needs fix
+=========================================================
+v2.0.4
+Trying using ntprotectvirtualmemory to make the stack executable
+=========================================================
+v2.0.5
+NtvirtualProtect is returning 0 but memory rights didnt change
+=========================================================
+v2.1.0
+Shellcode wipes Resources and Itself and exits the thread
+=========================================================
+v2.1.1
+BUG -> If the dll thread exits after the suicide... Access violation
+=========================================================
+v2.2.0
+FIXED the deadlock, now the dll exits without causing a crash
+=========================================================
+v2.3.0
+Assembly update, made it simple and not use virtual protect
+=========================================================
+v2.3.1
+made the injected peHeader PAGE_NOACCESS
+=========================================================
+v3.0.0
+Driver update
+=========================================================
+v3.1.0
+Fixed the communication
+=========================================================
+v3.2.0
+Can send Structure from user mode to kernel
+=========================================================
+v3.2.1
+Found Vad root

@@ -1,0 +1,11 @@
+*.obj
+*.exe
+*.dll
+*.lib
+*.exp
+*.ilk
+*.map
+*.pdb
+DbgMacros.h
+injection.h
+network_lib.cpp
