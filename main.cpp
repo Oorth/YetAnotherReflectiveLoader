@@ -1,8 +1,8 @@
 //cl /EHsc .\main.cpp .\injection.cpp /link /OUT:main.exe
-#define DEBUG 1
+#define DEBUG 0
 #define READ_LOCALLY 0
 
-// #include "injection.h"
+#include "injection.h"
 #include "DbgMacros.h"
 #include <Windows.h>
 #include <iostream>

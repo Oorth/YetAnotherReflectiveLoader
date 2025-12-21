@@ -1,4 +1,4 @@
-//cl /EHsc /GS- /Oy /Zi .\main.cpp .\injection.cpp /link /OUT:main.exe /DEBUG /MAP
+// cl /EHsc /GS- /Oy /Zi .\main.cpp .\injection.cpp /link /INCREMENTAL:NO /OUT:main.exe /DEBUG /MAP
 /*
     /c               # compile only, no linking
     /GS-             # disable stack‑security cookies
@@ -8,6 +8,9 @@
     /Gy              # enable function‑level COMDATs (slightly smaller code)
     /MT              # (optional) link the static CRT if need to use a few CRT routines, try avoid CRT entirely 
 */
+
+#define DEBUG 0
+
 #include "injection.h"
 #include "DbgMacros.h"
 #include <winternl.h>
