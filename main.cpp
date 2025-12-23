@@ -1,5 +1,5 @@
 //cl /EHsc .\main.cpp .\injection.cpp /link /OUT:main.exe
-#define DEBUG 0
+// #define DEBUG 0
 #define READ_LOCALLY 0
 
 #include "injection.h"
