@@ -205,7 +205,7 @@ NTSTATUS ManualMap(HANDLE hproc, DWORD PID, std::vector <unsigned char> *downloa
         baseAddress = nullptr;
         regionSize = pOptionalHeader->SizeOfImage;
 
-        Sysstatus = (NTSTATUS)(uintptr_t)SysFunction("ZwAllocateVirtualMemory", hproc, &baseAddress, 0, &regionSize, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+        Sysstatus = (NTSTATUS)(uintptr_t)SysFunction("ZwAllocateVirtualMemory", hproc, nullptr, 0, &regionSize, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
         if(Sysstatus != 0x00000000)
         {
             fuk("Couldn't allocate memory. Status: 0x%X", Sysstatus);
