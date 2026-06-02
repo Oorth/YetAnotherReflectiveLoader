@@ -1,5 +1,5 @@
 //cl /EHsc .\main.cpp .\injection.cpp /link /OUT:main.exe
-// #define DEBUG 0
+#define DEBUG 1
 #define READ_LOCALLY 0
 
 #include "injection.h"
@@ -155,6 +155,13 @@ HANDLE GetProcessHANDLE(const wchar_t* processName)
 
 int main()
 {
+
+    if(!setup_syscall_engine())
+    {
+        fuk("Failed To initialize YetAnotherGate :( \n");
+        return 1;
+    }
+
     HANDLE hProc = GetProcessHANDLE(L"notepad.exe");
     if(!hProc) { fuk("Somethig went wrong"); return 1; }
     else norm("hProc -> " ,CYAN"", hProc, "\n");

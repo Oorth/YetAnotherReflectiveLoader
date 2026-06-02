@@ -18,7 +18,7 @@ if errorlevel 1 (
 )
 
 @REM Compile C++ code
-cl /EHsc /GS- /Oy /Zi .\main.cpp .\injection.cpp .\suicide.obj /link /OUT:main.exe /DEBUG /MAP /INCREMENTAL:NO
+cl /EHsc /GS- /Oy /Zi .\main.cpp .\injection.cpp .\YetAnotherGate.cpp .\suicide.obj /link /OUT:main.exe /DEBUG /MAP /INCREMENTAL:NO
 if errorlevel 1 (
     @REM echo Compilation failed.
     goto :eof
