@@ -14,6 +14,7 @@
  ░ ░                                
 
 </pre>
+**Read the full technical breakdown on how this manual mapping engine and stealth cleanup works:** [Reflective DLL Injection](https://arth.imbeddex.com/malware/development/Reflective%20DLL%20Injection)
 # Demo
 ![Reflective Loader Demo](demo.gif)
 ## Overview
